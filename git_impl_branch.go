@@ -118,6 +118,9 @@ func (m *gitManager) GetBranch(ctx context.Context, branchID string) (Branch, er
 	if err != nil {
 		return Branch{}, ErrBranchNotFound
 	}
+	if e.TypeID != "Branch" {
+		return Branch{}, ErrBranchNotFound
+	}
 	repoID := m.resolveParentID(ctx, branchID, "belongs_to_repository")
 	if repoID == "" {
 		// Fallback: older push-indexed branches were created without the

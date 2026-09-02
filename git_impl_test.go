@@ -86,6 +86,37 @@ func TestInitRepoAndBranchLifecycle(t *testing.T) {
 	}
 }
 
+// TestGetByIDRejectsWrongEntityType guards against a bug found while porting
+// G5: GetBranch/GetTag/GetKeyword originally fetched by raw entity ID without
+// checking TypeID (unlike GetRepository/GetMergeRequest, which do), so a
+// Commit ID passed to GetBranch would silently come back as a zero-valued
+// Branch instead of ErrBranchNotFound. Since entitygraph.DataManager.GetEntity
+// is a single global ID lookup with no type scoping (one Postgres `entities`
+// table, not one collection per type), this wasn't a fake-only quirk — it
+// would misbehave against the real store too. Diff's resolveRef helper is
+// what surfaced it: a commit ID passed as a ref was misread as a
+// no-HEAD-commit branch instead of falling through to the commit-ID branch.
+func TestGetByIDRejectsWrongEntityType(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+
+	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
+	if err != nil {
+		t.Fatalf("InitRepo: %v", err)
+	}
+	commit := createCommit(t, m, repo.ID, "abc123")
+
+	if _, err := m.GetBranch(ctx, commit.ID); !errors.Is(err, ErrBranchNotFound) {
+		t.Fatalf("GetBranch(commitID): expected ErrBranchNotFound, got %v", err)
+	}
+	if _, err := m.GetTag(ctx, commit.ID); !errors.Is(err, ErrTagNotFound) {
+		t.Fatalf("GetTag(commitID): expected ErrTagNotFound, got %v", err)
+	}
+	if _, err := m.GetKeyword(ctx, commit.ID); !errors.Is(err, ErrKeywordNotFound) {
+		t.Fatalf("GetKeyword(commitID): expected ErrKeywordNotFound, got %v", err)
+	}
+}
+
 func TestMergeBranchAdvancesDefaultHead(t *testing.T) {
 	ctx := context.Background()
 	m := newTestManager()

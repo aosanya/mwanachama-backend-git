@@ -79,6 +79,9 @@ func (m *gitManager) GetTag(ctx context.Context, tagID string) (Tag, error) {
 	if err != nil {
 		return Tag{}, ErrTagNotFound
 	}
+	if e.TypeID != "Tag" {
+		return Tag{}, ErrTagNotFound
+	}
 	repoID := m.resolveParentID(ctx, tagID, "belongs_to_repository")
 	return entityToTag(e, repoID), nil
 }

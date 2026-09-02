@@ -114,6 +114,9 @@ func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (Keyword,
 		}
 		return Keyword{}, fmt.Errorf("GetKeyword %s: %w", keywordID, err)
 	}
+	if entity.TypeID != "Keyword" {
+		return Keyword{}, ErrKeywordNotFound
+	}
 	kw := entityToKeyword(entity)
 	// Populate ParentID from belongs_to_parent relationship.
 	parentRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
