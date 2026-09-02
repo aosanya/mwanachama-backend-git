@@ -1,0 +1,603 @@
+// Package mwanachamagit — pre-delivered schema definition.
+//
+// This file exposes [DefaultGitSchema], which returns the fixed
+// [schema.Schema] for mwanachama-git. Wiring code in mwanachama-api-gateway
+// seeds this schema per agency at startup via SchemaManager.SetSchema (set
+// s.AgencyID before calling; DefaultGitSchema itself returns an
+// agency-agnostic template).
+//
+// The schema declares eight TypeDefinitions:
+//   - Agency         — root entity; one per agency ID (mutable)
+//   - Repository     — a versioned codebase owned by an Agency; an Agency can
+//     have multiple Repositories (mutable)
+//   - Branch         — named ref pointing to a Commit; owns the branch lifecycle (mutable);
+//     carries a status field for lazy import v2 (stub/fetching/fetched/fetch_failed)
+//     and workflow_run_id linking it to its originating WorkflowRun
+//   - MergeRequest   — request to merge a source branch into a target branch;
+//     status: open|merged|closed|failed; carries workflow_run_id (FEAT-20260602-001)
+//   - Tag            — immutable named ref pointing to a Commit (immutable)
+//   - Commit         — immutable snapshot with author, message, and pointer to a Tree (immutable)
+//   - Tree           — immutable directory listing at a specific point in time (immutable)
+//   - Blob           — file content entity; content-addressed by SHA; carries documentation edges
+//   - Keyword        — hierarchical discovery label; forms a taxonomy tree (mutable)
+//   - ImportJob      — tracks the lifecycle of an async repository import (mutable)
+//   - FetchBranchJob — tracks the lifecycle of an async on-demand branch fetch (mutable)
+//
+// Dropped from the CodeValdGit original: GitInternalState (go-git config/
+// index/shallow bookkeeping used exclusively by the v1 storage.Storer, which
+// is out of scope here — see CLAUDE.md) and Repository.head_ref (a symbolic
+// HEAD ref needed only for Smart HTTP clone/fetch, same v1 scope).
+//
+// Graph topology (Git objects):
+//
+//	Agency ──has_repository──► Repository ──has_branch──► Branch ──points_to──► Commit ──has_tree──► Tree ──has_blob──► Blob
+//	                                       ──has_tag─────► Tag    ──points_to──► Commit              ──has_subtree──► Tree
+//	                                       ──has_commit──► Commit ──has_parent──► Commit
+//
+// Documentation edges (branch-scoped, replicated to main on merge per DR-010):
+//
+//	Blob ──tagged_with──► Keyword ──has_child──► Keyword   (keyword taxonomy)
+//	Blob ──references───► Blob  {descriptor}               (generic blob→blob edge; e.g. "documents", "depends_on", "contradicts")
+//	Blob ──referenced_by► Blob  {descriptor}               (inverse; same descriptor copied by entitygraph)
+//
+// Storage: every entity lives in mwanachama-go-shared's single Postgres
+// `entities` table, keyed by TypeID; TypeDefinition.StorageCollection below
+// is carried over from the ArangoDB original purely as a label (see
+// schema.TypeDefinition's doc) and has no functional effect here. All edges
+// live in the single `relationships` table.
+//
+// Inverse relationships auto-created by entitygraph.DataManager.CreateRelationship:
+//
+//	Repository ──belongs_to_agency──────► Agency
+//	Branch     ──belongs_to_repository──► Repository
+//	Tag        ──belongs_to_repository──► Repository
+//	Commit     ──belongs_to_repository──► Repository
+//	Tree       ──belongs_to_commit──────► Commit
+//	Blob       ──belongs_to_tree────────► Tree
+//	Tree       ──belongs_to_tree────────► Tree   (subtree inverse)
+//	Keyword    ──belongs_to_parent──────► Keyword (taxonomy inverse)
+//	Blob       ──referenced_by──────────► Blob   (references inverse; descriptor copied)
+package mwanachamagit
+
+import "github.com/aosanya/mwanachama-go-shared/schema"
+
+// DefaultGitSchema returns the pre-delivered [schema.Schema] seeded by
+// mwanachama-api-gateway on startup via SchemaManager.SetSchema. The
+// operation is idempotent — calling it multiple times with the same schema
+// ID is safe.
+func DefaultGitSchema() schema.Schema {
+	return schema.Schema{
+		ID:      "git-schema-v1",
+		Version: 1,
+		Tag:     "v1",
+		Types: []schema.TypeDefinition{
+			{
+				Name:              "Agency",
+				DisplayName:       "Agency",
+				StorageCollection: "git_agencies",
+				Properties: []schema.PropertyDefinition{
+					// name is the human-readable label for the agency.
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					{Name: "description", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// has_repository links the agency to all of its repositories.
+					// An agency may own zero or more repositories.
+					{
+						Name:    "has_repository",
+						Label:   "Repositories",
+						ToType:  "Repository",
+						ToMany:  true,
+						Inverse: "belongs_to_agency",
+					},
+				},
+			},
+			{
+				Name:              "Repository",
+				DisplayName:       "Repository",
+				StorageCollection: "git_repositories",
+				Properties: []schema.PropertyDefinition{
+					// name is the human-readable label, e.g. the agency ID used as repo key.
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					{Name: "description", Type: schema.PropertyTypeString},
+					// default_branch is the name of the primary branch (e.g. "main").
+					{Name: "default_branch", Type: schema.PropertyTypeString, Required: true},
+					// bare_clone_path is the local filesystem path of the bare shallow
+					// clone created by lazy import v2. FetchBranch reuses this clone
+					// to deepen individual branches without re-downloading the full
+					// packfile. Empty for repositories created via InitRepo.
+					{Name: "bare_clone_path", Type: schema.PropertyTypeString},
+					// source_url is the public HTTPS URL of the remote repository
+					// this repo was imported from. Empty for repos created via InitRepo.
+					{Name: "source_url", Type: schema.PropertyTypeString},
+					// fetched_commit_shas is a JSON-encoded array of commit SHA strings
+					// that have already been walked and materialised as entities.
+					// Used by FetchBranch to skip shared commits across branches
+					// (seen-SHA deduplication). Persisted so it survives server restarts.
+					{Name: "fetched_commit_shas", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// belongs_to_agency is the agency that owns this repository.
+					{
+						Name:     "belongs_to_agency",
+						Label:    "Agency",
+						ToType:   "Agency",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_repository",
+					},
+					{
+						Name:    "has_branch",
+						Label:   "Branches",
+						ToType:  "Branch",
+						ToMany:  true,
+						Inverse: "belongs_to_repository",
+					},
+					{
+						Name:    "has_tag",
+						Label:   "Tags",
+						ToType:  "Tag",
+						ToMany:  true,
+						Inverse: "belongs_to_repository",
+					},
+					{
+						Name:    "has_commit",
+						Label:   "Commits",
+						ToType:  "Commit",
+						ToMany:  true,
+						Inverse: "belongs_to_repository",
+					},
+					{
+						Name:    "has_merge_request",
+						Label:   "Merge Requests",
+						ToType:  "MergeRequest",
+						ToMany:  true,
+						Inverse: "belongs_to_repository",
+					},
+				},
+			},
+			{
+				Name:              "Branch",
+				DisplayName:       "Branch",
+				StorageCollection: "git_branches",
+				Properties: []schema.PropertyDefinition{
+					// name is the full ref name, e.g. "main" or "task/abc-001".
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					// is_default is true for the repository's default branch.
+					{Name: "is_default", Type: schema.PropertyTypeBoolean},
+					// sha is the target commit hash for this branch head.
+					{Name: "sha", Type: schema.PropertyTypeString},
+					// head_commit_id is the entity ID of the Commit this branch points
+					// to. Denormalised from the points_to edge for fast reads
+					// (Branch.HeadCommitID). Written on every WriteFile / MergeBranch /
+					// push completion.
+					{Name: "head_commit_id", Type: schema.PropertyTypeString},
+					// status tracks the lazy-import state of the branch content.
+					// Valid values: "stub" | "fetching" | "fetched" | "fetch_failed".
+					//   stub        — branch name + tip SHA known; no files/commits stored yet
+					//   fetching    — FetchBranch goroutine is running
+					//   fetched     — full commit history + file tree materialised
+					//   fetch_failed — fetch failed; error_message on the FetchBranchJob entity
+					// Empty for branches created via normal InitRepo / push flows.
+					{Name: "status", Type: schema.PropertyTypeString},
+					// source_url is the HTTPS URL of the remote repository this branch
+					// was imported from. Used by FetchBranch to re-clone the bare repo
+					// if bare_clone_path is no longer on disk. Empty for local branches.
+					{Name: "source_url", Type: schema.PropertyTypeString},
+					// workflow_run_id links this branch to the WorkflowRun that produced
+					// it (FEAT-20260602-001). Empty when the branch was created outside
+					// any orchestrated run (e.g. via direct git push or InitRepo's default).
+					{Name: "workflow_run_id", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// points_to is the current HEAD commit of this branch (ToMany=false;
+					// updated atomically on each push/merge).
+					{
+						Name:   "points_to",
+						Label:  "Head Commit",
+						ToType: "Commit",
+						ToMany: false,
+					},
+					{
+						Name:     "belongs_to_repository",
+						Label:    "Repository",
+						ToType:   "Repository",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_branch",
+					},
+				},
+			},
+			{
+				Name:              "MergeRequest",
+				DisplayName:       "Merge Request",
+				StorageCollection: "git_merge_requests",
+				// MergeRequest captures an in-flight or completed request to merge a
+				// source branch into a target branch. Lifecycle: open → merged | closed.
+				// workflow_run_id links the MR back to its originating WorkflowRun so
+				// the cross-service closure can enumerate every MR a run produced.
+				Properties: []schema.PropertyDefinition{
+					// title is the human-readable summary of the change.
+					{Name: "title", Type: schema.PropertyTypeString, Required: true},
+					// description is an optional longer-form explanation.
+					{Name: "description", Type: schema.PropertyTypeString},
+					// source_branch_id is the entitygraph ID of the branch whose
+					// commits are being requested for merge. Required.
+					{Name: "source_branch_id", Type: schema.PropertyTypeString, Required: true},
+					// source_branch_name is the human-readable label of the source
+					// branch, captured at MR creation for display without an extra lookup.
+					{Name: "source_branch_name", Type: schema.PropertyTypeString},
+					// target_branch_id is the entitygraph ID of the branch the source
+					// will be merged into. Empty defaults to the repository's default branch.
+					{Name: "target_branch_id", Type: schema.PropertyTypeString},
+					// target_branch_name is the human-readable label of the target branch.
+					{Name: "target_branch_name", Type: schema.PropertyTypeString},
+					// status is the current MR lifecycle state.
+					// Valid values: "open" | "merged" | "closed" | "failed".
+					{Name: "status", Type: schema.PropertyTypeString, Required: true},
+					// merged_commit_sha is populated when status transitions to "merged"
+					// and carries the SHA of the resulting target-branch HEAD commit.
+					{Name: "merged_commit_sha", Type: schema.PropertyTypeString},
+					// author_name is the agent or user who opened the MR. Optional.
+					{Name: "author_name", Type: schema.PropertyTypeString},
+					// error_message is populated only when status == "failed".
+					{Name: "error_message", Type: schema.PropertyTypeString},
+					// workflow_run_id links this MR to its originating WorkflowRun
+					// (FEAT-20260602-001). Empty for manually opened MRs.
+					{Name: "workflow_run_id", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// belongs_to_repository scopes the MR to a single repository.
+					{
+						Name:     "belongs_to_repository",
+						Label:    "Repository",
+						ToType:   "Repository",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_merge_request",
+					},
+					// has_source_branch links the MR to its source Branch.
+					{
+						Name:     "has_source_branch",
+						Label:    "Source Branch",
+						ToType:   "Branch",
+						ToMany:   false,
+						Required: true,
+					},
+					// has_target_branch links the MR to its target Branch.
+					{
+						Name:   "has_target_branch",
+						Label:  "Target Branch",
+						ToType: "Branch",
+						ToMany: false,
+					},
+				},
+			},
+			{
+				Name:              "Tag",
+				DisplayName:       "Tag",
+				StorageCollection: "git_tags",
+				// Tags are immutable once created — the target commit must never change.
+				Immutable: true,
+				Properties: []schema.PropertyDefinition{
+					// name is the human-readable tag label, e.g. "v1.0.0".
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					// sha is the commit SHA this tag resolves to.
+					{Name: "sha", Type: schema.PropertyTypeString, Required: true},
+					// message is the annotation message for annotated tags; empty for lightweight tags.
+					{Name: "message", Type: schema.PropertyTypeString},
+					// tagger_name is the name of the person or agent who created the tag.
+					{Name: "tagger_name", Type: schema.PropertyTypeString},
+					// tagger_at is the ISO 8601 timestamp at which the tag was created.
+					{Name: "tagger_at", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					{
+						Name:     "points_to",
+						Label:    "Commit",
+						ToType:   "Commit",
+						ToMany:   false,
+						Required: true,
+					},
+					{
+						Name:     "belongs_to_repository",
+						Label:    "Repository",
+						ToType:   "Repository",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_tag",
+					},
+				},
+			},
+			{
+				Name:              "Commit",
+				DisplayName:       "Commit",
+				StorageCollection: "git_commits",
+				// sha is the natural unique key — content-addressed by SHA.
+				UniqueKey: []string{"sha"},
+				// Commits are content-addressed git objects — immutable once written.
+				Immutable: true,
+				Properties: []schema.PropertyDefinition{
+					// sha is the full 40-character hex Git commit hash.
+					{Name: "sha", Type: schema.PropertyTypeString, Required: true},
+					{Name: "message", Type: schema.PropertyTypeString, Required: true},
+					{Name: "author_name", Type: schema.PropertyTypeString},
+					{Name: "author_email", Type: schema.PropertyTypeString},
+					// author_at is the author-timestamp in ISO 8601 format.
+					{Name: "author_at", Type: schema.PropertyTypeString},
+					{Name: "committer_name", Type: schema.PropertyTypeString},
+					{Name: "committer_email", Type: schema.PropertyTypeString},
+					// committed_at is the committer-timestamp in ISO 8601 format.
+					{Name: "committed_at", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// has_tree is the root Tree object for this commit's snapshot.
+					{
+						Name:     "has_tree",
+						Label:    "Tree",
+						ToType:   "Tree",
+						ToMany:   false,
+						Required: true,
+					},
+					// has_parent lists parent commits (0 for the initial commit;
+					// 1 for a normal commit; 2+ for merge commits).
+					{
+						Name:   "has_parent",
+						Label:  "Parents",
+						ToType: "Commit",
+						ToMany: true,
+					},
+					{
+						Name:     "belongs_to_repository",
+						Label:    "Repository",
+						ToType:   "Repository",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_commit",
+					},
+				},
+			},
+			{
+				Name:              "Tree",
+				DisplayName:       "Tree",
+				StorageCollection: "git_trees",
+				// sha is the natural unique key — content-addressed by SHA.
+				UniqueKey: []string{"sha"},
+				// Trees are content-addressed git objects — immutable once written.
+				Immutable: true,
+				Properties: []schema.PropertyDefinition{
+					// sha is the full 40-character hex Git tree hash.
+					{Name: "sha", Type: schema.PropertyTypeString, Required: true},
+					// path is the directory path within the commit tree hierarchy.
+					// An empty string ("") denotes the root tree of a commit.
+					{Name: "path", Type: schema.PropertyTypeString},
+					// entries is a JSON array of child entries in the form
+					// [{"name":"","mode":"100644","sha":""}] serialised at write time.
+					{Name: "entries", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// has_blob links the tree to its direct file children.
+					{
+						Name:    "has_blob",
+						Label:   "Blobs",
+						ToType:  "Blob",
+						ToMany:  true,
+						Inverse: "belongs_to_tree",
+					},
+					// has_subtree links to child directory trees.
+					{
+						Name:   "has_subtree",
+						Label:  "Subtrees",
+						ToType: "Tree",
+						ToMany: true,
+					},
+					// belongs_to_commit is the commit that owns this root tree.
+					// Only set when this Tree is the root (path == "").
+					{
+						Name:    "belongs_to_commit",
+						Label:   "Commit",
+						ToType:  "Commit",
+						ToMany:  false,
+						Inverse: "has_tree",
+					},
+				},
+			},
+			{
+				Name:              "Blob",
+				DisplayName:       "Blob",
+				StorageCollection: "git_blobs",
+				// sha is the natural unique key — content-addressed by SHA.
+				UniqueKey: []string{"sha"},
+				// Blobs are content-addressed by SHA — the data/sha/size fields never
+				// change once written. Metadata fields (name, path, extension) are
+				// backfilled after commit time via UpdateEntity, so Immutable is not set.
+				Properties: []schema.PropertyDefinition{
+					// sha is the full 40-character hex Git blob hash.
+					{Name: "sha", Type: schema.PropertyTypeString, Required: true},
+					// path is the file path relative to the repository root,
+					// e.g. "src/handlers/server.go".
+					{Name: "path", Type: schema.PropertyTypeString, Required: true},
+					// name is the base file name including extension, e.g. "Test.txt".
+					// Derived from the last path segment.
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					// extension is the file extension without the leading dot, e.g. "txt".
+					// Empty string for files with no extension.
+					{Name: "extension", Type: schema.PropertyTypeString},
+					// size is the byte size of the file content.
+					{Name: "size", Type: schema.PropertyTypeInteger},
+					// encoding is "utf-8" for text files or "base64" for binary files.
+					{Name: "encoding", Type: schema.PropertyTypeString},
+					// content holds the raw file content; base64-encoded when encoding == "base64".
+					{Name: "content", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					{
+						Name:     "belongs_to_tree",
+						Label:    "Tree",
+						ToType:   "Tree",
+						ToMany:   false,
+						Required: true,
+						Inverse:  "has_blob",
+					},
+					// tagged_with links a Blob to Keyword nodes for discovery.
+					// Branch-scoped: created on task-branch Blobs, replicated to main on merge (DR-010).
+					//
+					// Edge properties capture the knowledge-graph signal depth:
+					//   signal — how deeply this Blob covers the Keyword.
+					//     Well-known values (ordered by depth):
+					//       "surface"     — keyword mentioned in passing; file does not own the concept
+					//       "index"       — file navigates to other files on this topic
+					//       "structural"  — file defines a schema, format, status model, or process
+					//       "contributor" — file adds content that other files on this topic depend on
+					//       "authority"   — canonical source; other files reference this one
+					//   note — human-readable explanation of how this Blob covers the Keyword at
+					//          the declared signal depth.
+					{
+						Name:   "tagged_with",
+						Label:  "Keywords",
+						ToType: "Keyword",
+						ToMany: true,
+						Properties: []schema.PropertyDefinition{
+							// signal is the depth at which this Blob covers the Keyword.
+							// Required. Well-known values: "surface", "index", "structural",
+							// "contributor", "authority".
+							{Name: "signal", Type: schema.PropertyTypeString, Required: true},
+							// note is a plain-text explanation of how the file covers the keyword
+							// at the declared signal depth. Optional but strongly recommended.
+							{Name: "note", Type: schema.PropertyTypeString},
+						},
+					},
+					// references is a generic directed edge from one Blob to another within
+					// the same repo. The nature of the relationship is captured in the
+					// "descriptor" edge property — an open-vocabulary string. Agents should
+					// reuse existing descriptors where possible (e.g. "documents",
+					// "depends_on", "contradicts", "references") before coining new ones.
+					// Inverse: referenced_by (auto-created by entitygraph.DataManager,
+					// which copies the Properties map so the descriptor is readable from
+					// both traversal directions).
+					{
+						Name:    "references",
+						Label:   "References",
+						ToType:  "Blob",
+						ToMany:  true,
+						Inverse: "referenced_by",
+						Properties: []schema.PropertyDefinition{
+							// descriptor is the semantic label for this edge.
+							// Open vocabulary; well-known values: "documents", "depends_on",
+							// "contradicts", "references", "test_for", "obsoletes",
+							// "tested_by" (source is the authority doc; target is the test/QA file).
+							{Name: "descriptor", Type: schema.PropertyTypeString, Required: true},
+						},
+					},
+					// referenced_by is the inverse of references.
+					// Carries the same "descriptor" property so that inbound traversal
+					// ("who references this file and how?") returns full context.
+					{
+						Name:    "referenced_by",
+						Label:   "Referenced By",
+						ToType:  "Blob",
+						ToMany:  true,
+						Inverse: "references",
+						Properties: []schema.PropertyDefinition{
+							// descriptor mirrors the originating references edge so inbound
+							// traversal returns the same semantic context.
+							{Name: "descriptor", Type: schema.PropertyTypeString, Required: true},
+						},
+					},
+				},
+			},
+			{
+				Name:              "Keyword",
+				DisplayName:       "Keyword",
+				StorageCollection: "git_keywords",
+				// Keywords are hierarchical discovery labels used by AI agents to tag
+				// Blobs, Branches, and Commits. A Keyword can have child Keywords
+				// (has_child / belongs_to_parent), forming a free-form taxonomy tree.
+				// Querying a parent Keyword cascades to all descendants by default.
+				Properties: []schema.PropertyDefinition{
+					// name is the human-readable label, e.g. "authentication" or "grpc".
+					{Name: "name", Type: schema.PropertyTypeString, Required: true},
+					// description is an optional plain-text summary of the keyword.
+					{Name: "description", Type: schema.PropertyTypeString},
+					// scope is an optional grouping label (e.g. "domain", "layer", "technology").
+					{Name: "scope", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+				Relationships: []schema.RelationshipDefinition{
+					// has_child links a parent keyword to its direct children in the taxonomy.
+					{
+						Name:    "has_child",
+						Label:   "Children",
+						ToType:  "Keyword",
+						ToMany:  true,
+						Inverse: "belongs_to_parent",
+					},
+					// belongs_to_parent is the inverse of has_child.
+					{
+						Name:    "belongs_to_parent",
+						Label:   "Parent",
+						ToType:  "Keyword",
+						ToMany:  false,
+						Inverse: "has_child",
+					},
+				},
+			},
+			{
+				Name:              "ImportJob",
+				DisplayName:       "Import Job",
+				StorageCollection: "git_importjobs",
+				// ImportJob tracks the lifecycle of an async repository import operation.
+				// One entity per import request; keyed by a UUID assigned at call time.
+				// Status transitions: pending → running → completed | failed | cancelled.
+				Properties: []schema.PropertyDefinition{
+					// agency_id scopes this job to the owning agency.
+					{Name: "agency_id", Type: schema.PropertyTypeString, Required: true},
+					// source_url is the public HTTPS URL of the remote repository being imported.
+					{Name: "source_url", Type: schema.PropertyTypeString, Required: true},
+					// status is one of: "pending", "running", "completed", "failed", "cancelled".
+					{Name: "status", Type: schema.PropertyTypeString, Required: true},
+					// error_message is populated only when status == "failed".
+					{Name: "error_message", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+			},
+			{
+				Name:              "FetchBranchJob",
+				DisplayName:       "Fetch Branch Job",
+				StorageCollection: "git_fetchjobs",
+				// FetchBranchJob tracks the lifecycle of an async on-demand branch
+				// fetch operation triggered by FetchBranch. One entity per call;
+				// keyed by a UUID assigned at call time.
+				// Status transitions: pending → running → completed | failed.
+				Properties: []schema.PropertyDefinition{
+					// agency_id scopes this job to the owning agency.
+					{Name: "agency_id", Type: schema.PropertyTypeString, Required: true},
+					// repo_id is the entity ID of the Repository being fetched.
+					{Name: "repo_id", Type: schema.PropertyTypeString, Required: true},
+					// branch_name is the short branch name being fetched, e.g. "main".
+					{Name: "branch_name", Type: schema.PropertyTypeString, Required: true},
+					// status is one of: "pending", "running", "completed", "failed".
+					{Name: "status", Type: schema.PropertyTypeString, Required: true},
+					// error_message is populated only when status == "failed".
+					{Name: "error_message", Type: schema.PropertyTypeString},
+					{Name: "created_at", Type: schema.PropertyTypeString},
+					{Name: "updated_at", Type: schema.PropertyTypeString},
+				},
+			},
+		},
+	}
+}

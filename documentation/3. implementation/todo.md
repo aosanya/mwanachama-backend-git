@@ -5,7 +5,6 @@ Everything else (completed rows, board context) is in [todo_done.md](todo_done.m
 
 | Task | Title | Status | Depends on |
 |------|-------|--------|------------|
-| G3 | Port `schema.go`'s `DefaultGitSchema()` onto `mwanachama-go-shared`'s type defs | 📋 | G2, mwanachama-go-shared#S2 |
 | G4 | Port pure-entitygraph impl files as-is: branch, converters, edgelifecycle, graph, keywords, mergerequests, repo, rollback, tag | 📋 | G3, mwanachama-go-shared#S4 |
 | G5 | Port go-git-touching impl files (blobcache, fileops, import) — build tree/blob objects via `go-git/plumbing/object`; no wire-protocol transport | 📋 | G4 |
 | G6 | Decide scope of fetchbranch / push / index-sync (`syncGitGraph`) — these exist to ingest a real external git remote; default is to skip unless confirmed needed | 📋 | G4 |
