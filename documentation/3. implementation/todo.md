@@ -6,4 +6,3 @@ Everything else (completed rows, board context) is in [todo_done.md](todo_done.m
 | Task | Title | Status | Depends on |
 |------|-------|--------|------------|
 | G6 | Real git-push wire protocol for `IndexPushedBranch` (Smart HTTP receive-pack indexing) — currently a stub returning `ErrPushIndexingNotImplemented` so `*gitManager` compiles; default is to skip unless confirmed needed | 📋 | G4 |
-| G10 | Wire into `mwanachama-api-gateway`: new `internal/domain/…` consuming `GitManager` | 📋 | G9 |
