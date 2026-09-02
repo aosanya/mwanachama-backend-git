@@ -13,7 +13,14 @@ package mwanachamagit
 import (
 	"context"
 	"sync"
+
+	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-go-shared/events"
 )
+
+// GitSchemaManager is a type alias for [entitygraph.SchemaManager].
+// Used by wiring code to seed [DefaultGitSchema] on startup via SetSchema.
+type GitSchemaManager = entitygraph.SchemaManager
 
 // GitManager is the primary interface for Git-like repository management.
 // HTTP handlers hold this interface — never the concrete type.
@@ -388,4 +395,31 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, agencyID string, fn fun
 	case err := <-done:
 		return err
 	}
+}
+
+// gitManager is the concrete implementation of [GitManager].
+// It wraps [entitygraph.DataManager] to expose Git-specific convenience
+// methods over the entity graph. Its method bodies are ported across G4
+// (pure-entitygraph impl files), G5 (go-git-touching impl files), G6
+// (fetchbranch/push/index-sync, scope TBD), and G7 (blob search) — until all
+// of those land, *gitManager does not satisfy [GitManager], so there is no
+// public constructor yet (see NewGitManager's absence). Tests within this
+// package construct &gitManager{...} directly.
+type gitManager struct {
+	dm        entitygraph.DataManager // graph CRUD — injected by wiring code
+	sm        GitSchemaManager        // schema versioning — injected by wiring code
+	publisher events.Publisher        // optional; nil = skip event publishing
+	agencyID  string                  // the single agency ID for this database
+	locker    RefLocker               // serialises per-agency default-branch mutations
+	searcher  BlobSearcher            // optional; nil = SearchBlobs returns empty
+}
+
+// publish emits a topic/payload pair via the optional [events.Publisher].
+// A nil publisher is silently skipped; errors are swallowed — events are
+// best-effort and must not fail the originating operation.
+func (m *gitManager) publish(ctx context.Context, topic string, payload any) {
+	if m.publisher == nil {
+		return
+	}
+	_ = m.publisher.Publish(ctx, topic, payload)
 }
