@@ -9,7 +9,8 @@ test:
 	go test ./...
 
 ## Integration tests against a real Postgres instance.
-## Expects PG* env vars (see .env.example once storage code lands).
+## Expects POSTGRES_URL (see .env.example; scripts/local-postgres.sh stands
+## one up quickly). Applies this domain's DDL itself on each run.
 test-pg:
 	go test -tags=integration ./...
 
