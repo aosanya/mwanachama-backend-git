@@ -16,6 +16,24 @@ func newTestManager() *gitManager {
 	}
 }
 
+// TestNewGitManagerSatisfiesInterface locks in that *gitManager fully
+// implements GitManager now that G4/G5 landed the last pure-entitygraph and
+// go-git-touching methods (IndexPushedBranch is a deliberate G6 stub;
+// SearchBlobs gracefully no-ops with a nil searcher).
+func TestNewGitManagerSatisfiesInterface(t *testing.T) {
+	var gm GitManager = NewGitManager(newFakeDataManager(), nil, nil, "agency-1", nil, nil)
+	if _, err := gm.ListRepositories(context.Background()); err != nil {
+		t.Fatalf("ListRepositories on a fresh manager: %v", err)
+	}
+	if err := gm.IndexPushedBranch(context.Background(), "repo", "refs/heads/main", "", "abc"); !errors.Is(err, ErrPushIndexingNotImplemented) {
+		t.Fatalf("expected ErrPushIndexingNotImplemented, got %v", err)
+	}
+	results, err := gm.SearchBlobs(context.Background(), SearchBlobsRequest{Query: "auth"})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("expected graceful empty result with no searcher, got %+v (err=%v)", results, err)
+	}
+}
+
 // createCommit is a G4-test-only stand-in for WriteFile (G5, not yet
 // ported): it creates a bare Commit entity linked to repoID so branch/merge
 // flows have something real to advance HEAD to.

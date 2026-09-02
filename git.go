@@ -399,12 +399,12 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, agencyID string, fn fun
 
 // gitManager is the concrete implementation of [GitManager].
 // It wraps [entitygraph.DataManager] to expose Git-specific convenience
-// methods over the entity graph. Its method bodies are ported across G4
-// (pure-entitygraph impl files), G5 (go-git-touching impl files), G6
-// (fetchbranch/push/index-sync, scope TBD), and G7 (blob search) — until all
-// of those land, *gitManager does not satisfy [GitManager], so there is no
-// public constructor yet (see NewGitManager's absence). Tests within this
-// package construct &gitManager{...} directly.
+// methods over the entity graph. Method bodies were ported across G4
+// (pure-entitygraph impl files) and G5 (go-git-touching impl files, plus
+// FetchBranch pulled forward from G6). IndexPushedBranch (G6 — real
+// git-push wire protocol) is a deliberate "not implemented" stub; SearchBlobs
+// (G7) works today and gracefully no-ops until a real BlobSearcher is
+// injected.
 type gitManager struct {
 	dm        entitygraph.DataManager // graph CRUD — injected by wiring code
 	sm        GitSchemaManager        // schema versioning — injected by wiring code
@@ -412,6 +412,33 @@ type gitManager struct {
 	agencyID  string                  // the single agency ID for this database
 	locker    RefLocker               // serialises per-agency default-branch mutations
 	searcher  BlobSearcher            // optional; nil = SearchBlobs returns empty
+}
+
+// NewGitManager constructs a [GitManager] backed by the given
+// [entitygraph.DataManager] and [GitSchemaManager].
+// agencyID is the single agency scoped to this database instance.
+// pub may be nil — events are skipped when no publisher is set.
+// locker may be nil — a default in-process [mutexLocker] is used.
+// searcher may be nil — SearchBlobs returns an empty result without error.
+func NewGitManager(
+	dm entitygraph.DataManager,
+	sm GitSchemaManager,
+	pub events.Publisher,
+	agencyID string,
+	locker RefLocker,
+	searcher BlobSearcher,
+) GitManager {
+	if locker == nil {
+		locker = &mutexLocker{}
+	}
+	return &gitManager{
+		dm:        dm,
+		sm:        sm,
+		publisher: pub,
+		agencyID:  agencyID,
+		locker:    locker,
+		searcher:  searcher,
+	}
 }
 
 // publish emits a topic/payload pair via the optional [events.Publisher].
