@@ -16,6 +16,19 @@ func newTestManager() *gitManager {
 	}
 }
 
+// newTestManagerWithPublisher is newTestManager plus a fakePublisher for
+// tests asserting on which event topics fire.
+func newTestManagerWithPublisher() (*gitManager, *fakePublisher) {
+	pub := &fakePublisher{}
+	m := &gitManager{
+		dm:        newFakeDataManager(),
+		agencyID:  "agency-1",
+		locker:    &mutexLocker{},
+		publisher: pub,
+	}
+	return m, pub
+}
+
 // TestNewGitManagerSatisfiesInterface locks in that *gitManager fully
 // implements GitManager now that G4/G5 landed the last pure-entitygraph and
 // go-git-touching methods (IndexPushedBranch is a deliberate G6 stub;

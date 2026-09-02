@@ -290,3 +290,54 @@ func propsMatch(p, want map[string]any) bool {
 	}
 	return true
 }
+
+// publishedEvent is one recorded [fakePublisher.Publish] call.
+type publishedEvent struct {
+	topic    string
+	agencyID string
+	payload  any
+}
+
+// fakePublisher is an in-process events.Publisher that records every call,
+// for tests asserting on which topics fire and in what order.
+type fakePublisher struct {
+	mu     sync.Mutex
+	events []publishedEvent
+}
+
+func (p *fakePublisher) Publish(_ context.Context, topic string, payload any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, publishedEvent{topic: topic, payload: payload})
+	return nil
+}
+
+// published returns a snapshot of all recorded events.
+func (p *fakePublisher) published() []publishedEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]publishedEvent(nil), p.events...)
+}
+
+// countByTopic returns how many recorded events have the given topic.
+func countByTopic(events []publishedEvent, topic string) int {
+	n := 0
+	for _, e := range events {
+		if e.topic == topic {
+			n++
+		}
+	}
+	return n
+}
+
+// hasTopic reports whether at least one event with the given topic appears
+// in events.
+func hasTopic(events []publishedEvent, topic string) bool {
+	return countByTopic(events, topic) > 0
+}
+
+// updateEntityReq is a tiny convenience wrapper for tests that side-load
+// state directly into the fakeDataManager via UpdateEntity.
+func updateEntityReq(props map[string]any) entitygraph.UpdateEntityRequest {
+	return entitygraph.UpdateEntityRequest{Properties: props}
+}

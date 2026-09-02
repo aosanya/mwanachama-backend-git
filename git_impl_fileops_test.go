@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/aosanya/mwanachama-go-shared/entitygraph"
 )
 
 func TestWriteReadDeleteFile(t *testing.T) {
@@ -171,6 +173,66 @@ func TestImportRepoGuards(t *testing.T) {
 	// ever touches the network.
 	if _, err := m.ImportRepo(ctx, ImportRepoRequest{Name: "other", SourceURL: "https://example.invalid/x.git"}); !errors.Is(err, ErrRepoAlreadyExists) {
 		t.Fatalf("expected ErrRepoAlreadyExists, got %v", err)
+	}
+}
+
+func TestImportRepoRejectsIfImportInProgress(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	now := "2026-01-01T00:00:00Z"
+
+	if _, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
+		AgencyID: m.agencyID,
+		TypeID:   "ImportJob",
+		Properties: map[string]any{
+			"agency_id": m.agencyID, "source_url": "https://example.com/first.git",
+			"status": "pending", "error_message": "", "created_at": now, "updated_at": now,
+		},
+	}); err != nil {
+		t.Fatalf("seed ImportJob: %v", err)
+	}
+
+	if _, err := m.ImportRepo(ctx, ImportRepoRequest{Name: "second-import", SourceURL: "https://example.com/second.git"}); !errors.Is(err, ErrImportInProgress) {
+		t.Fatalf("expected ErrImportInProgress, got %v", err)
+	}
+}
+
+func TestGetImportStatusNotFound(t *testing.T) {
+	m := newTestManager()
+	if _, err := m.GetImportStatus(context.Background(), "does-not-exist"); !errors.Is(err, ErrImportJobNotFound) {
+		t.Fatalf("expected ErrImportJobNotFound, got %v", err)
+	}
+}
+
+func TestCancelImportNotFound(t *testing.T) {
+	m := newTestManager()
+	if err := m.CancelImport(context.Background(), "does-not-exist"); !errors.Is(err, ErrImportJobNotFound) {
+		t.Fatalf("expected ErrImportJobNotFound, got %v", err)
+	}
+}
+
+func TestCancelImportTerminalState(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "cancelled"} {
+		t.Run("status="+status, func(t *testing.T) {
+			ctx := context.Background()
+			m := newTestManager()
+			now := "2026-01-01T00:00:00Z"
+
+			jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
+				AgencyID: m.agencyID,
+				TypeID:   "ImportJob",
+				Properties: map[string]any{
+					"agency_id": m.agencyID, "source_url": "https://example.com/repo.git",
+					"status": status, "error_message": "", "created_at": now, "updated_at": now,
+				},
+			})
+			if err != nil {
+				t.Fatalf("seed ImportJob: %v", err)
+			}
+			if err := m.CancelImport(ctx, jobEntity.ID); !errors.Is(err, ErrImportJobNotCancellable) {
+				t.Fatalf("status=%s: expected ErrImportJobNotCancellable, got %v", status, err)
+			}
+		})
 	}
 }
 
