@@ -1,0 +1,4 @@
+# QA
+
+Test coverage and results for `mwanachama-git`. Empty at bootstrap —
+populate alongside G9.
