@@ -1,7 +1,7 @@
 // Package mwanachamagit — pre-delivered schema definition.
 //
 // This file exposes [DefaultGitSchema], which returns the fixed
-// [schema.Schema] for mwanachama-git. Wiring code in mwanachama-api-gateway
+// [schema.Schema] for mwanachama-backend-git. Wiring code in mwanachama-backend-api-gateway
 // seeds this schema per agency at startup via SchemaManager.SetSchema (set
 // s.AgencyID before calling; DefaultGitSchema itself returns an
 // agency-agnostic template).
@@ -40,7 +40,7 @@
 //	Blob ──references───► Blob  {descriptor}               (generic blob→blob edge; e.g. "documents", "depends_on", "contradicts")
 //	Blob ──referenced_by► Blob  {descriptor}               (inverse; same descriptor copied by entitygraph)
 //
-// Storage: every entity lives in mwanachama-go-shared's single Postgres
+// Storage: every entity lives in mwanachama-backend-shared's single Postgres
 // `entities` table, keyed by TypeID; TypeDefinition.StorageCollection below
 // is carried over from the ArangoDB original purely as a label (see
 // schema.TypeDefinition's doc) and has no functional effect here. All edges
@@ -59,10 +59,10 @@
 //	Blob       ──referenced_by──────────► Blob   (references inverse; descriptor copied)
 package mwanachamagit
 
-import "github.com/aosanya/mwanachama-go-shared/schema"
+import "github.com/aosanya/mwanachama-backend-shared/schema"
 
 // DefaultGitSchema returns the pre-delivered [schema.Schema] seeded by
-// mwanachama-api-gateway on startup via SchemaManager.SetSchema. The
+// mwanachama-backend-api-gateway on startup via SchemaManager.SetSchema. The
 // operation is idempotent — calling it multiple times with the same schema
 // ID is safe.
 func DefaultGitSchema() schema.Schema {

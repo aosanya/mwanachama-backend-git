@@ -19,7 +19,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // defaultSignalLayers maps the built-in signal names to their rank.

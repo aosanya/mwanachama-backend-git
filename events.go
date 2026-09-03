@@ -1,18 +1,18 @@
 package mwanachamagit
 
-// topicPrefix is the domain prefix for every topic mwanachama-git publishes.
+// topicPrefix is the domain prefix for every topic mwanachama-backend-git publishes.
 // Mirrors CodeValdGit's eventbus.DomainGit ("git.") — kept local since this
 // repo has no cross-service domain-prefix registry to import.
 const topicPrefix = "git."
 
-// Event topic constants — the closed set mwanachama-git publishes via the
+// Event topic constants — the closed set mwanachama-backend-git publishes via the
 // [events.Publisher] injected into the concrete GitManager implementation.
 //
 // Dropped from the CodeValdGit original: TopicBranchCreate and
 // TopicFileWrite, plus their ConsumedTopics() list and BranchCreatePayload /
 // FileWritePayload / FileWriteKeyword payload types. Those existed so
 // CodeValdGit could subscribe to a CodeValdCortex pub/sub bus and act on
-// inbound LLM-emitted actions; mwanachama-api-gateway calls GitManager
+// inbound LLM-emitted actions; mwanachama-backend-api-gateway calls GitManager
 // methods directly from its own HTTP handlers, so there is no bus to
 // subscribe to and no inbound payload shape to define.
 const (
@@ -71,7 +71,7 @@ const (
 	TopicWorkflowRunRolledBack = topicPrefix + "workflow_run.rolled_back"
 )
 
-// AllTopics is the closed list of topics mwanachama-git publishes.
+// AllTopics is the closed list of topics mwanachama-backend-git publishes.
 func AllTopics() []string {
 	return []string{
 		TopicRepoCreated,
@@ -214,7 +214,7 @@ type WorkflowRunRolledBackPayload struct {
 }
 
 // FileWrittenPayload is the [events.Publisher] payload for [TopicFileWritten].
-// Published by mwanachama-git after a successful [GitManager.WriteFile].
+// Published by mwanachama-backend-git after a successful [GitManager.WriteFile].
 type FileWrittenPayload struct {
 	// Repository is the repository the file was written to.
 	Repository string `json:"repository"`

@@ -2,13 +2,13 @@
 // utilities for [gitManager].
 //
 // Property helpers (StringProp, BoolProp, Int64Prop) live in
-// [github.com/aosanya/mwanachama-go-shared/entitygraph] and are used directly.
+// [github.com/aosanya/mwanachama-backend-shared/entitygraph] and are used directly.
 package mwanachamagit
 
 import (
 	"context"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // ── Entity → domain converters ────────────────────────────────────────────────

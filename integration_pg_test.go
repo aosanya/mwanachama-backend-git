@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
-	"github.com/aosanya/mwanachama-go-shared/postgres"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/postgres"
 )
 
 // openTestDB opens a connection to POSTGRES_URL, applying this domain's DDL
@@ -52,7 +52,7 @@ func newTestAgencyID(t *testing.T) string {
 // TestPostgresGitManagerRoundTrip exercises InitRepo → CreateBranch →
 // WriteFile → ReadFile → Log → MergeBranch against a real Postgres-backed
 // GitManager (postgres.Backend, wired through NewGitManager exactly as
-// mwanachama-api-gateway will) — the port-fidelity signal G9 asks for: the
+// mwanachama-backend-api-gateway will) — the port-fidelity signal G9 asks for: the
 // same business logic the fake-DataManager unit tests exercise, now against
 // the real entitygraph.DataManager implementation.
 func TestPostgresGitManagerRoundTrip(t *testing.T) {

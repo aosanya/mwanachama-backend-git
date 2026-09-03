@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // countEdgesByBranchID returns the number of relationships with the given

@@ -4,7 +4,7 @@
 //
 // Blob content lives inline on each row's jsonb `properties` column in the
 // shared [entitygraph]-backed `entities` table (see
-// [github.com/aosanya/mwanachama-go-shared/postgres.DDL]) — there is no
+// [github.com/aosanya/mwanachama-backend-shared/postgres.DDL]) — there is no
 // separate blob-search index table. Search matches directly against
 // `to_tsvector('english', name || ' ' || content)`, computed at query time.
 // A GIN index over that same expression (see [BlobSearchIndexDDL]) keeps
@@ -17,7 +17,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/aosanya/mwanachama-go-shared/postgres"
+	"github.com/aosanya/mwanachama-backend-shared/postgres"
 )
 
 // PostgresBlobSearcher is the Postgres-backed [BlobSearcher]. It reads the
@@ -32,7 +32,7 @@ type PostgresBlobSearcher struct {
 // NewPostgresBlobSearcher constructs a [PostgresBlobSearcher] reading the
 // entities table named by tables.Entities. Run [BlobSearchIndexDDL] against
 // db once (in the same migration that applies
-// [github.com/aosanya/mwanachama-go-shared/postgres.DDL]) before using it.
+// [github.com/aosanya/mwanachama-backend-shared/postgres.DDL]) before using it.
 func NewPostgresBlobSearcher(db *sql.DB, tables postgres.TableNames) *PostgresBlobSearcher {
 	return &PostgresBlobSearcher{db: db, table: tables.Entities}
 }
@@ -40,7 +40,7 @@ func NewPostgresBlobSearcher(db *sql.DB, tables postgres.TableNames) *PostgresBl
 // BlobSearchIndexDDL returns the CREATE INDEX statement backing
 // [PostgresBlobSearcher]'s full-text search over the entities table named by
 // t.Entities. Append this to the same migration that applies
-// [github.com/aosanya/mwanachama-go-shared/postgres.DDL](t) — it indexes an
+// [github.com/aosanya/mwanachama-backend-shared/postgres.DDL](t) — it indexes an
 // expression over that table's `properties` column, so the table must exist
 // first.
 //

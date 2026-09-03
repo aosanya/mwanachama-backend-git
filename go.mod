@@ -1,11 +1,11 @@
-module github.com/aosanya/mwanachama-git
+module github.com/aosanya/mwanachama-backend-git
 
 go 1.24.0
 
 toolchain go1.24.7
 
 require (
-	github.com/aosanya/mwanachama-go-shared v0.0.0
+	github.com/aosanya/mwanachama-backend-shared v0.0.0
 	github.com/go-git/go-git/v5 v5.16.5
 )
 
@@ -39,4 +39,4 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
 
-replace github.com/aosanya/mwanachama-go-shared => ../mwanachama-go-shared
+replace github.com/aosanya/mwanachama-backend-shared => ../mwanachama-backend-shared

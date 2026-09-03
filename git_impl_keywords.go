@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // validDocEdges is the set of allowed documentation relationship names.

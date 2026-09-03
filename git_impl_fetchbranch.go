@@ -24,7 +24,7 @@ import (
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // fetchJobStatus values for the FetchBranchJob entity "status" property.
@@ -72,7 +72,7 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 	// If the branch already has a HEAD commit, its commits/trees/blobs were
 	// populated by push-indexing (or a prior successful fetch) and the objects
 	// live in the local clone — re-cloning from source_url is unnecessary and
-	// will fail for branches that were pushed to mwanachama-git but never
+	// will fail for branches that were pushed to mwanachama-backend-git but never
 	// existed on the import origin.
 	now := time.Now().UTC().Format(time.RFC3339)
 	if headCommitID != "" {

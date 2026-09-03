@@ -1,4 +1,4 @@
-# mwanachama-git — documentation
+# mwanachama-backend-git — documentation
 
 ## Layout
 
@@ -7,7 +7,7 @@ Four folders, in SDLC order, and everything lives under one of them.
 | Folder | What's inside |
 |--------|---------------|
 | [1. requirements/](1.%20requirements/) | Problem, vision and scope for versioned content in `mwanachama-frontend-kazi`. |
-| [2. design/](2.%20design/) | The git-object-graph schema (repos/branches/commits/trees/blobs/merge requests/tags) and how it maps onto `mwanachama-go-shared`'s entity-graph store. |
+| [2. design/](2.%20design/) | The git-object-graph schema (repos/branches/commits/trees/blobs/merge requests/tags) and how it maps onto `mwanachama-backend-shared`'s entity-graph store. |
 | [3. implementation/](3.%20implementation/) | The work: `todo.md` (open board), `todo_done.md` (completed rows + board context). |
 | [4. qa/](4.%20qa/) | Test coverage and results. |
 
@@ -23,7 +23,7 @@ Four folders, in SDLC order, and everything lives under one of them.
 A Postgres port of `CodeValdGit`'s v2 `GitManager` — an entitygraph-native
 git-like object graph (branches/commits/trees/blobs/merge requests/tags/
 rollback/history), **not** a real `git` wire-protocol server. Built on
-[mwanachama-go-shared](../mwanachama-go-shared)'s entity-graph store instead
+[mwanachama-backend-shared](../mwanachama-backend-shared)'s entity-graph store instead
 of ArangoDB, and imported directly by
-[mwanachama-api-gateway](../mwanachama-api-gateway) — no gRPC, no
+[mwanachama-backend-api-gateway](../mwanachama-backend-api-gateway) — no gRPC, no
 sub-service shape.

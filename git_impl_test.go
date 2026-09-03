@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 func newTestManager() *gitManager {

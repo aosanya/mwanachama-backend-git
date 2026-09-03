@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // docEdgeTypes is the set of branch-scoped documentation edge names that

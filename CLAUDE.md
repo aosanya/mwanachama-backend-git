@@ -2,10 +2,10 @@
 
 Guidance for Claude Code working in this repository.
 
-## Project: mwanachama-git
+## Project: mwanachama-backend-git
 
 Postgres port of `CodeValdGit` for [mwanachama-frontend-kazi](../mwanachama-frontend-kazi).
-Module path `github.com/aosanya/mwanachama-git`.
+Module path `github.com/aosanya/mwanachama-backend-git`.
 
 `CodeValdGit` actually contains two generations of API: a legacy v1
 (`Backend`/`RepoManager`/`Repo`, real `go-git` storage + a git Smart HTTP
@@ -20,7 +20,7 @@ out to be needed later, that's a new scoped decision, not a default.
 
 Also dropped from the original: `proto/`, `cmd/server`, `internal/server`
 (gRPC `GitServiceServer`), `internal/registrar` (CodeValdCortex Cross
-heartbeat) — `mwanachama-api-gateway` runs as one service and imports this
+heartbeat) — `mwanachama-backend-api-gateway` runs as one service and imports this
 package directly.
 
 ## Porting notes
@@ -30,11 +30,11 @@ package directly.
   `Keyword`) port essentially unchanged.
 - `schema.go`'s `DefaultGitSchema()` (10 type defs, one shared relationship
   edge collection, `Immutable`+`UniqueKey` on `Commit`/`Tree`/`Blob` keyed by
-  SHA) ports onto `mwanachama-go-shared`'s type-definition shape.
+  SHA) ports onto `mwanachama-backend-shared`'s type-definition shape.
 - Most `git_impl_*.go` files (branch, converters, edgelifecycle, graph,
   keywords, mergerequests, repo, rollback, tag) only ever call
   `entitygraph.DataManager` — no direct AQL — so they port with minimal
-  churn once `mwanachama-go-shared`'s `DataManager` exists.
+  churn once `mwanachama-backend-shared`'s `DataManager` exists.
 - `blobcache.go`, `fileops.go`, `import.go` build real git objects via
   `go-git/plumbing/object` — keep the `go-git` object model for parsing, drop
   only the wire-protocol transport layer around it.

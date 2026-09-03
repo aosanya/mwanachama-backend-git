@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // fakeDataManager is a minimal in-process entitygraph.DataManager used to
 // unit-test G4's ported business logic without a real Postgres backend.
-// Real Postgres integration testing is G9's job (mwanachama-go-shared#S4);
+// Real Postgres integration testing is G9's job (mwanachama-backend-shared#S4);
 // this fake only needs to be correct enough to exercise the ported
 // git_impl_*.go control flow.
 type fakeDataManager struct {

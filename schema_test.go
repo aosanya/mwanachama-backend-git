@@ -3,7 +3,7 @@ package mwanachamagit
 import (
 	"testing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // TestDefaultGitSchemaValidates guards against schema-authoring mistakes

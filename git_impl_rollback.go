@@ -1,7 +1,7 @@
 // git_impl_rollback.go — Workflow-run rollback implementation for [gitManager].
 //
 // FEAT-20260602-004 (Git leg of the cross-service rollback coordinator owned
-// by mwanachama-taskmanager). Hard-deletes every non-default Branch carrying
+// by mwanachama-backend-taskmanager). Hard-deletes every non-default Branch carrying
 // the given workflow_run_id and flips every matching MergeRequest to
 // "rolled_back".
 //
@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // RollbackByWorkflowRun implements [GitManager].

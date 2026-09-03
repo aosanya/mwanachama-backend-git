@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // seedTaggedWith creates a tagged_with relationship directly on m.dm so the

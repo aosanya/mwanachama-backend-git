@@ -11,7 +11,7 @@
 set -euo pipefail
 
 port=55488
-name=mwanachama-git-pg
+name=mwanachama-backend-git-pg
 user=gituser
 pass=gitpass
 db=mwanachama_git_test

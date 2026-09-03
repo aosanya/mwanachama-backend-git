@@ -35,7 +35,7 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // importJobStatus values used as the "status" property of the ImportJob entity.
@@ -60,7 +60,7 @@ const (
 // failed run) it is removed and recreated so that PlainClone always starts
 // with an empty target.
 func cloneRootDir(agencyID, jobID string) (string, error) {
-	base := filepath.Join(os.TempDir(), "mwanachama-git-clones", agencyID, jobID)
+	base := filepath.Join(os.TempDir(), "mwanachama-backend-git-clones", agencyID, jobID)
 	if err := os.RemoveAll(base); err != nil {
 		return "", fmt.Errorf("cloneRootDir remove stale %s: %w", base, err)
 	}

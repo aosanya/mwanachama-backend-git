@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // TestGIT011_ConcurrentMerges verifies that two goroutines merging different

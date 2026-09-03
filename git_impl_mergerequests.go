@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // CreateMergeRequest opens a new MergeRequest for the given source branch.

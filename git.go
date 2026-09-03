@@ -1,12 +1,12 @@
-// git.go defines the flat [GitManager] interface for mwanachama-git.
+// git.go defines the flat [GitManager] interface for mwanachama-backend-git.
 //
 // A single Agency/AI-aligned interface: all domain operations — repository
 // lifecycle, branches, tags, merge requests, file writes, and history — are
-// methods on [GitManager]. Callers (an HTTP handler in mwanachama-api-gateway)
+// methods on [GitManager]. Callers (an HTTP handler in mwanachama-backend-api-gateway)
 // hold the interface, never the concrete type.
 //
 // The concrete gitManager implementation is added in a later port step,
-// wired against [github.com/aosanya/mwanachama-go-shared/entitygraph]'s
+// wired against [github.com/aosanya/mwanachama-backend-shared/entitygraph]'s
 // DataManager so the manager stays storage-agnostic.
 package mwanachamagit
 
@@ -14,8 +14,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
-	"github.com/aosanya/mwanachama-go-shared/events"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/events"
 )
 
 // GitSchemaManager is a type alias for [entitygraph.SchemaManager].
@@ -129,7 +129,7 @@ type GitManager interface {
 	// ── Workflow-run rollback (FEAT-20260602-004) ─────────────────────────────
 
 	// RollbackByWorkflowRun is the Git leg of the cross-service workflow-run
-	// rollback coordinator owned by mwanachama-taskmanager. It hard-deletes
+	// rollback coordinator owned by mwanachama-backend-taskmanager. It hard-deletes
 	// every non-default Branch entity tagged with the given workflow_run_id
 	// and flips every MergeRequest tagged with the same run to status
 	// "rolled_back" (preserving merged_commit_sha for audit).

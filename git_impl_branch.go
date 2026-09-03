@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aosanya/mwanachama-go-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
 
 // ── Branch Management ─────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (Branch, 
 // filtered by [BranchFilter]. When filter.WorkflowRunID is non-empty only
 // branches with the matching workflow_run_id property are returned.
 // When repoID is empty and filter.WorkflowRunID is set the query is
-// cross-repository (used by mwanachama-taskmanager's WorkflowRun closure
+// cross-repository (used by mwanachama-backend-taskmanager's WorkflowRun closure
 // aggregator).
 func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, filter BranchFilter) ([]Branch, error) {
 	if repoID == "" && filter.WorkflowRunID != "" {
