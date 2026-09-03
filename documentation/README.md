@@ -6,7 +6,7 @@ Four folders, in SDLC order, and everything lives under one of them.
 
 | Folder | What's inside |
 |--------|---------------|
-| [1. requirements/](1.%20requirements/) | Problem, vision and scope for versioned content in `mwanachama-kazi`. |
+| [1. requirements/](1.%20requirements/) | Problem, vision and scope for versioned content in `mwanachama-frontend-kazi`. |
 | [2. design/](2.%20design/) | The git-object-graph schema (repos/branches/commits/trees/blobs/merge requests/tags) and how it maps onto `mwanachama-go-shared`'s entity-graph store. |
 | [3. implementation/](3.%20implementation/) | The work: `todo.md` (open board), `todo_done.md` (completed rows + board context). |
 | [4. qa/](4.%20qa/) | Test coverage and results. |

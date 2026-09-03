@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repository.
 
 ## Project: mwanachama-git
 
-Postgres port of `CodeValdGit` for [mwanachama-kazi](../mwanachama-kazi).
+Postgres port of `CodeValdGit` for [mwanachama-frontend-kazi](../mwanachama-frontend-kazi).
 Module path `github.com/aosanya/mwanachama-git`.
 
 `CodeValdGit` actually contains two generations of API: a legacy v1
@@ -12,7 +12,7 @@ Module path `github.com/aosanya/mwanachama-git`.
 server for wire-protocol `clone`/`fetch`/`push`) and the current v2
 (`GitManager`, entitygraph-native — branches/commits/trees/blobs/merge
 requests/tags/rollback/history modeled as entities and edges in the graph
-store). **Only v2 is in scope here.** `mwanachama-kazi` needs versioned
+store). **Only v2 is in scope here.** `mwanachama-frontend-kazi` needs versioned
 content, not a real git server; the v1 `Backend`, `storage/arangodb/storer.go`
 (the go-git `storage.Storer` built on entity CRUD), and `internal/server/
 githttp.go` are deliberately not ported. If real git-protocol interop turns

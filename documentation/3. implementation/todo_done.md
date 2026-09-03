@@ -20,11 +20,11 @@
 
 `mwanachama-git` — Go library, module `github.com/aosanya/mwanachama-git`.
 Consumed by [mwanachama-api-gateway](../../../mwanachama-api-gateway) for
-[mwanachama-kazi](../../../mwanachama-kazi).
+[mwanachama-frontend-kazi](../../../mwanachama-frontend-kazi).
 
 ### Why this repo exists
 
-`mwanachama-kazi` needs git-like versioned content. `CodeValdGit` already
+`mwanachama-frontend-kazi` needs git-like versioned content. `CodeValdGit` already
 built this — as an ArangoDB-backed library for CodeValdCortex agencies, with
 a gRPC service and (in its v1 API) real git wire-protocol serving. Neither
 of those fit `mwanachama-api-gateway`, which is Postgres-only and runs as one
@@ -38,7 +38,7 @@ port is: reuse `git_impl_*.go`/`models.go`/`git.go` close to verbatim, retarget
 storage onto [mwanachama-go-shared](../../../mwanachama-go-shared)'s Postgres
 entity-graph engine, drop gRPC/proto/cmd/registrar, and drop the go-git
 wire-protocol layer (v1 `Backend`, `storer.go`, `githttp.go`) since
-`mwanachama-kazi` doesn't need real `git clone`/`push` interop.
+`mwanachama-frontend-kazi` doesn't need real `git clone`/`push` interop.
 
 Full task breakdown and rationale: originally scoped in
 `/Users/tony/.claude/plans/kind-snacking-rose.md`.

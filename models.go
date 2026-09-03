@@ -1,5 +1,5 @@
 // Package mwanachamagit provides Git-like versioned content for
-// mwanachama-kazi: repositories, branches, commits, trees, blobs, merge
+// mwanachama-frontend-kazi: repositories, branches, commits, trees, blobs, merge
 // requests, tags, and a keyword-tagging documentation layer, modeled as
 // entities and edges in a [github.com/aosanya/mwanachama-go-shared/entitygraph]
 // entity graph. Value types used by [GitManager] and its callers are defined

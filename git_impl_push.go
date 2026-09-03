@@ -15,7 +15,7 @@ var ErrPushIndexingNotImplemented = fmt.Errorf("IndexPushedBranch: not implement
 // listener and the dropped v1 Backend.OpenStorer abstraction, plus an
 // internal .git-graph/ sync package that wasn't ported. CLAUDE.md already
 // scopes "real git clone/fetch/push over the wire" out of mwanachama-git —
-// mwanachama-kazi doesn't act as a git remote other tools push to — so unlike
+// mwanachama-frontend-kazi doesn't act as a git remote other tools push to — so unlike
 // FetchBranch/ImportRepo (which only *originate* an outbound clone), this
 // method has no client to satisfy yet. Revisit only if a real inbound push
 // listener is confirmed needed (GIT task G6).

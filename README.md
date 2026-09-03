@@ -3,7 +3,7 @@
 Postgres port of `CodeValdGit`'s entitygraph-native `GitManager` — a
 git-like object graph (repositories, branches, commits, trees, blobs, merge
 requests, tags, rollback, history) for versioned content in
-[mwanachama-kazi](../mwanachama-kazi).
+[mwanachama-frontend-kazi](../mwanachama-frontend-kazi).
 
 Not a real `git` wire-protocol server — no `git clone`/`push` interop, no
 gRPC, no sub-service shape. Built on
