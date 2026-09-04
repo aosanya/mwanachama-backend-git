@@ -2,137 +2,118 @@
 //
 // Branch management is in git_impl_branch.go.
 // Tag management is in git_impl_tag.go.
-// Entity converters and property helpers are in git_impl_converters.go.
 package mwanachamagit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // ── Repository Lifecycle ──────────────────────────────────────────────────────
 
-// InitRepo creates a new Repository entity.
+// InitRepo creates a new Repository row.
 // Returns [ErrRepoAlreadyExists] if a repository with the same name already exists.
 // Publishes [TopicRepoCreated] after a successful write.
-func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (Repository, error) {
-	existing, err := m.listRepositories(ctx)
-	if err != nil {
-		return Repository{}, fmt.Errorf("InitRepo: %w", err)
+func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (models.Repository, error) {
+	var count int64
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+		Where("name = ? AND NOT deleted", req.Name).Count(&count).Error; err != nil {
+		return models.Repository{}, fmt.Errorf("InitRepo: check existing: %w", err)
 	}
-	for _, r := range existing {
-		if entitygraph.StringProp(r.Properties, "name") == req.Name {
-			return Repository{}, ErrRepoAlreadyExists
-		}
+	if count > 0 {
+		return models.Repository{}, ErrRepoAlreadyExists
 	}
 
-	// Ensure the Agency root entity exists; create it if not.
-	agencyEntityID, err := m.ensureAgencyEntity(ctx)
+	agencyID, err := m.ensureAgencyEntity(ctx)
 	if err != nil {
-		return Repository{}, fmt.Errorf("InitRepo: ensure agency: %w", err)
+		return models.Repository{}, fmt.Errorf("InitRepo: ensure agency: %w", err)
 	}
 
 	defaultBranch := req.DefaultBranch
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := models.NowRFC3339()
 
-	repoEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Repository",
-		Properties: map[string]any{
-			"name":           req.Name,
-			"description":    req.Description,
-			"default_branch": defaultBranch,
-			"created_at":     now,
-			"updated_at":     now,
-		},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_agency", ToID: agencyEntityID},
-		},
+	row := gormstore.RepositoryToRow(models.Repository{
+		Name:          req.Name,
+		Description:   req.Description,
+		DefaultBranch: defaultBranch,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	})
-	if err != nil {
-		return Repository{}, fmt.Errorf("InitRepo: create entity: %w", err)
+	row.AgencyID = gormstore.StringToNullable(agencyID)
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&row).Error; err != nil {
+		return models.Repository{}, fmt.Errorf("InitRepo: create repository: %w", err)
 	}
 
-	// Create the default branch pointing to no commit yet.
-	branchNow := time.Now().UTC().Format(time.RFC3339)
-	defaultBranchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Branch",
-		Properties: map[string]any{
-			"name":       defaultBranch,
-			"is_default": true,
-			"created_at": branchNow,
-			"updated_at": branchNow,
-		},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repoEntity.ID},
-		},
+	branchRow := gormstore.BranchToRow(models.Branch{
+		Name:      defaultBranch,
+		IsDefault: true,
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
-	if err != nil {
-		return Repository{}, fmt.Errorf("InitRepo: create default branch: %w", err)
+	branchRow.RepositoryID = gormstore.StringToNullable(row.ID)
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
+		return models.Repository{}, fmt.Errorf("InitRepo: create default branch: %w", err)
 	}
 
-	// Create the forward has_branch edge (repo → branch) so listBranchesByRepo
-	// can locate it via RelationshipFilter{Name:"has_branch", FromID: repoID}.
-	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   "has_branch",
-		FromID: repoEntity.ID,
-		ToID:   defaultBranchEntity.ID,
-	}); err != nil {
-		return Repository{}, fmt.Errorf("InitRepo: link default branch: %w", err)
-	}
-
-	repo := entityToRepository(repoEntity)
-	m.publish(ctx, TopicRepoCreated, RepoCreatedPayload{RepoID: repoEntity.ID, Name: req.Name})
+	repo := gormstore.RepositoryFromRow(row)
+	m.publish(ctx, TopicRepoCreated, RepoCreatedPayload{RepoID: repo.ID, Name: req.Name})
 	return repo, nil
 }
 
-// ListRepositories returns all Repository entities.
-func (m *gitManager) ListRepositories(ctx context.Context) ([]Repository, error) {
-	entities, err := m.listRepositories(ctx)
-	if err != nil {
+// ListRepositories returns all Repository rows.
+func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository, error) {
+	var rows []gormstore.RepositoryRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+		Where("NOT deleted").Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListRepositories: %w", err)
 	}
-	out := make([]Repository, len(entities))
-	for i, e := range entities {
-		out[i] = entityToRepository(e)
+	out := make([]models.Repository, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.RepositoryFromRow(r)
 	}
 	return out, nil
 }
 
-// GetRepository retrieves a Repository entity by its ID.
+// GetRepository retrieves a Repository row by its ID.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-func (m *gitManager) GetRepository(ctx context.Context, repoID string) (Repository, error) {
-	e, err := m.dm.GetEntity(ctx, repoID)
+func (m *gitManager) GetRepository(ctx context.Context, repoID string) (models.Repository, error) {
+	var row gormstore.RepositoryRow
+	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+		Where("id = ? AND NOT deleted", repoID).First(&row).Error
 	if err != nil {
-		return Repository{}, ErrRepoNotInitialised
-	}
-	if e.TypeID != "Repository" {
-		return Repository{}, ErrRepoNotInitialised
-	}
-	return entityToRepository(e), nil
-}
-
-// GetRepositoryByName retrieves a Repository entity by its human-readable name.
-// Returns [ErrRepoNotInitialised] if no repository with that name exists.
-func (m *gitManager) GetRepositoryByName(ctx context.Context, repoName string) (Repository, error) {
-	entities, err := m.listRepositories(ctx)
-	if err != nil {
-		return Repository{}, fmt.Errorf("GetRepositoryByName: %w", err)
-	}
-	for _, e := range entities {
-		if entitygraph.StringProp(e.Properties, "name") == repoName {
-			return entityToRepository(e), nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Repository{}, ErrRepoNotInitialised
 		}
+		return models.Repository{}, fmt.Errorf("GetRepository: %w", err)
 	}
-	return Repository{}, ErrRepoNotInitialised
+	return gormstore.RepositoryFromRow(row), nil
 }
 
-// DeleteRepo soft-deletes the specified repository entity and all owned sub-entities.
+// GetRepositoryByName retrieves a Repository row by its human-readable name.
+// Returns [ErrRepoNotInitialised] if no repository with that name exists.
+func (m *gitManager) GetRepositoryByName(ctx context.Context, repoName string) (models.Repository, error) {
+	var row gormstore.RepositoryRow
+	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+		Where("name = ? AND NOT deleted", repoName).First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Repository{}, ErrRepoNotInitialised
+		}
+		return models.Repository{}, fmt.Errorf("GetRepositoryByName: %w", err)
+	}
+	return gormstore.RepositoryFromRow(row), nil
+}
+
+// DeleteRepo soft-deletes the specified repository row and all owned sub-rows.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 	repo, err := m.GetRepository(ctx, repoID)
@@ -140,37 +121,23 @@ func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 		return fmt.Errorf("DeleteRepo: %w", err)
 	}
 
-	// Soft-delete all branches.
-	branches, err := m.listBranchesByRepo(ctx, repo.ID)
-	if err != nil {
-		return fmt.Errorf("DeleteRepo: list branches: %w", err)
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ?", repo.ID).Update("deleted", true).Error; err != nil {
+		return fmt.Errorf("DeleteRepo: delete branches: %w", err)
 	}
-	for _, b := range branches {
-		if delErr := m.dm.DeleteEntity(ctx, b.ID); delErr != nil {
-			return fmt.Errorf("DeleteRepo: delete branch %s: %w", b.ID, delErr)
-		}
+	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
+		Where("repository_id = ?", repo.ID).Update("deleted", true).Error; err != nil {
+		return fmt.Errorf("DeleteRepo: delete tags: %w", err)
 	}
-
-	// Soft-delete all tags.
-	tags, err := m.listTagsByRepo(ctx, repo.ID)
-	if err != nil {
-		return fmt.Errorf("DeleteRepo: list tags: %w", err)
-	}
-	for _, t := range tags {
-		if delErr := m.dm.DeleteEntity(ctx, t.ID); delErr != nil {
-			return fmt.Errorf("DeleteRepo: delete tag %s: %w", t.ID, delErr)
-		}
-	}
-
-	// Soft-delete the repository itself.
-	if err := m.dm.DeleteEntity(ctx, repo.ID); err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+		Where("id = ?", repo.ID).Update("deleted", true).Error; err != nil {
 		return fmt.Errorf("DeleteRepo: delete repo: %w", err)
 	}
 	return nil
 }
 
-// PurgeRepo is a no-op alias for DeleteRepo in the entitygraph model — soft
-// deletion is the only supported deletion strategy.
+// PurgeRepo is a no-op alias for DeleteRepo — soft deletion is the only
+// supported deletion strategy.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) PurgeRepo(ctx context.Context, repoID string) error {
 	return m.DeleteRepo(ctx, repoID)
@@ -178,37 +145,22 @@ func (m *gitManager) PurgeRepo(ctx context.Context, repoID string) error {
 
 // ── Repository internal helpers ───────────────────────────────────────────────
 
-// listRepositories returns all Repository entities.
-func (m *gitManager) listRepositories(ctx context.Context) ([]entitygraph.Entity, error) {
-	return m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Repository",
-	})
-}
-
-// ensureAgencyEntity returns the ID of the single Agency root entity for
-// this deployment, creating it if it does not yet exist. Each deployment is
-// single-tenant, so there is at most one Agency entity in the database.
+// ensureAgencyEntity returns the ID of the single Agency root row for this
+// deployment, creating it if it does not yet exist. Each deployment is
+// single-tenant, so there is at most one Agency row in the database.
 func (m *gitManager) ensureAgencyEntity(ctx context.Context) (string, error) {
-	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Agency",
-	})
-	if err != nil {
+	var row gormstore.AgencyRow
+	err := m.db.WithContext(ctx).Table(m.tables.Agencies).First(&row).Error
+	if err == nil {
+		return row.ID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", err
 	}
-	if len(entities) > 0 {
-		return entities[0].ID, nil
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	e, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Agency",
-		Properties: map[string]any{
-			"name":       "default",
-			"created_at": now,
-			"updated_at": now,
-		},
-	})
-	if err != nil {
+	now := models.NowRFC3339()
+	row = gormstore.AgencyToRow(models.Agency{Name: "default", CreatedAt: now, UpdatedAt: now})
+	if err := m.db.WithContext(ctx).Table(m.tables.Agencies).Create(&row).Error; err != nil {
 		return "", err
 	}
-	return e.ID, nil
+	return row.ID, nil
 }

@@ -5,34 +5,16 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-func newTestManager() *gitManager {
-	return &gitManager{
-		dm:     newFakeDataManager(),
-		locker: &mutexLocker{},
-	}
-}
-
-// newTestManagerWithPublisher is newTestManager plus a fakePublisher for
-// tests asserting on which event topics fire.
-func newTestManagerWithPublisher() (*gitManager, *fakePublisher) {
-	pub := &fakePublisher{}
-	m := &gitManager{
-		dm:        newFakeDataManager(),
-		locker:    &mutexLocker{},
-		publisher: pub,
-	}
-	return m, pub
-}
-
 // TestNewGitManagerSatisfiesInterface locks in that *gitManager fully
-// implements GitManager now that G4/G5 landed the last pure-entitygraph and
-// go-git-touching methods (IndexPushedBranch is a deliberate G6 stub;
-// SearchBlobs gracefully no-ops with a nil searcher).
+// implements GitManager. IndexPushedBranch is a deliberate G6 stub;
+// SearchBlobs gracefully no-ops with a nil searcher.
 func TestNewGitManagerSatisfiesInterface(t *testing.T) {
-	var gm GitManager = NewGitManager(newFakeDataManager(), nil, nil, nil, nil)
+	m := newTestManager(t)
+	var gm GitManager = m
 	if _, err := gm.ListRepositories(context.Background()); err != nil {
 		t.Fatalf("ListRepositories on a fresh manager: %v", err)
 	}
@@ -45,30 +27,22 @@ func TestNewGitManagerSatisfiesInterface(t *testing.T) {
 	}
 }
 
-// createCommit is a G4-test-only stand-in for WriteFile (G5, not yet
-// ported): it creates a bare Commit entity linked to repoID so branch/merge
-// flows have something real to advance HEAD to.
-func createCommit(t *testing.T, m *gitManager, repoID, sha string) entitygraph.Entity {
+// createCommit is a test-only stand-in for WriteFile: it creates a bare
+// Commit row linked to repoID so branch/merge flows have something real to
+// advance HEAD to.
+func createCommit(t *testing.T, m *gitManager, repoID, sha string) gormstore.CommitRow {
 	t.Helper()
-	e, err := m.dm.CreateEntity(context.Background(), entitygraph.CreateEntityRequest{
-		TypeID: "Commit",
-		Properties: map[string]any{
-			"sha":     sha,
-			"message": "test commit " + sha,
-		},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repoID},
-		},
-	})
-	if err != nil {
+	row := gormstore.CommitToRow(models.Commit{SHA: sha, Message: "test commit " + sha, CreatedAt: models.NowRFC3339()})
+	row.RepositoryID = gormstore.StringToNullable(repoID)
+	if err := m.db.WithContext(context.Background()).Table(m.tables.Commits).Create(&row).Error; err != nil {
 		t.Fatalf("createCommit: %v", err)
 	}
-	return e
+	return row
 }
 
 func TestInitRepoAndBranchLifecycle(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -114,19 +88,13 @@ func TestInitRepoAndBranchLifecycle(t *testing.T) {
 	}
 }
 
-// TestGetByIDRejectsWrongEntityType guards against a bug found while porting
-// G5: GetBranch/GetTag/GetKeyword originally fetched by raw entity ID without
-// checking TypeID (unlike GetRepository/GetMergeRequest, which do), so a
-// Commit ID passed to GetBranch would silently come back as a zero-valued
-// Branch instead of ErrBranchNotFound. Since entitygraph.DataManager.GetEntity
-// is a single global ID lookup with no type scoping (one Postgres `entities`
-// table, not one collection per type), this wasn't a fake-only quirk — it
-// would misbehave against the real store too. Diff's resolveRef helper is
-// what surfaced it: a commit ID passed as a ref was misread as a
-// no-HEAD-commit branch instead of falling through to the commit-ID branch.
+// TestGetByIDRejectsWrongEntityType guards against fetching a row from the
+// wrong table by ID: a Commit ID passed to GetBranch/GetTag/GetKeyword must
+// come back as not-found, since each type now lives in its own table (no
+// shared ID space to accidentally match against).
 func TestGetByIDRejectsWrongEntityType(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -147,7 +115,7 @@ func TestGetByIDRejectsWrongEntityType(t *testing.T) {
 
 func TestMergeBranchAdvancesDefaultHead(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -180,7 +148,7 @@ func TestMergeBranchAdvancesDefaultHead(t *testing.T) {
 
 func TestMergeRequestLifecycle(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -203,7 +171,7 @@ func TestMergeRequestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMergeRequest: %v", err)
 	}
-	if mr.Status != MergeRequestStatusOpen {
+	if mr.Status != models.MergeRequestStatusOpen {
 		t.Fatalf("expected open status, got %q", mr.Status)
 	}
 
@@ -211,7 +179,7 @@ func TestMergeRequestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompleteMergeRequest: %v", err)
 	}
-	if completed.Status != MergeRequestStatusMerged {
+	if completed.Status != models.MergeRequestStatusMerged {
 		t.Fatalf("expected merged status, got %q", completed.Status)
 	}
 	if completed.MergedCommitSHA != "cafebabe" {
@@ -225,7 +193,7 @@ func TestMergeRequestLifecycle(t *testing.T) {
 
 func TestCreateTag(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -259,7 +227,7 @@ func TestCreateTag(t *testing.T) {
 
 func TestKeywordTreeAndDeleteReparents(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	root, err := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "domain"})
 	if err != nil {
@@ -298,7 +266,7 @@ func TestKeywordTreeAndDeleteReparents(t *testing.T) {
 
 func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -311,17 +279,14 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateKeyword: %v", err)
 	}
-	blob, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Blob",
-		Properties: map[string]any{"path": "auth.go", "name": "auth.go"},
-	})
-	if err != nil {
+	blobRow := gormstore.BlobToRow(models.Blob{Path: "auth.go", Name: "auth.go", CreatedAt: models.NowRFC3339()})
+	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
 		t.Fatalf("create blob: %v", err)
 	}
 
 	if err := m.CreateEdge(ctx, CreateEdgeRequest{
 		BranchID:         branch.ID,
-		FromEntityID:     blob.ID,
+		FromEntityID:     blobRow.ID,
 		RelationshipName: "tagged_with",
 		ToEntityID:       kw.ID,
 	}); err != nil {
@@ -330,7 +295,7 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 
 	if err := m.CreateEdge(ctx, CreateEdgeRequest{
 		BranchID:         branch.ID,
-		FromEntityID:     blob.ID,
+		FromEntityID:     blobRow.ID,
 		RelationshipName: "not-a-real-edge",
 		ToEntityID:       kw.ID,
 	}); !errors.Is(err, ErrInvalidRelationship) {
@@ -344,13 +309,13 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchByKeywords: %v", err)
 	}
-	if len(result.Nodes) != 1 || result.Nodes[0].ID != blob.ID {
-		t.Fatalf("expected blob %s in search results, got %+v", blob.ID, result.Nodes)
+	if len(result.Nodes) != 1 || result.Nodes[0].ID != blobRow.ID {
+		t.Fatalf("expected blob %s in search results, got %+v", blobRow.ID, result.Nodes)
 	}
 
 	if err := m.DeleteEdge(ctx, DeleteEdgeRequest{
 		BranchID:         branch.ID,
-		FromEntityID:     blob.ID,
+		FromEntityID:     blobRow.ID,
 		RelationshipName: "tagged_with",
 		ToEntityID:       kw.ID,
 	}); err != nil {
@@ -358,7 +323,7 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	}
 	if err := m.DeleteEdge(ctx, DeleteEdgeRequest{
 		BranchID:         branch.ID,
-		FromEntityID:     blob.ID,
+		FromEntityID:     blobRow.ID,
 		RelationshipName: "tagged_with",
 		ToEntityID:       kw.ID,
 	}); !errors.Is(err, ErrEdgeNotFound) {
@@ -368,7 +333,7 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 
 func TestRollbackByWorkflowRun(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	const runID = "run-123"
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
@@ -421,7 +386,7 @@ func TestRollbackByWorkflowRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMergeRequest: %v", err)
 	}
-	if rolledMR.Status != MergeRequestStatusRolledBack {
+	if rolledMR.Status != models.MergeRequestStatusRolledBack {
 		t.Fatalf("expected rolled_back status, got %q", rolledMR.Status)
 	}
 

@@ -3,193 +3,133 @@ package mwanachamagit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // ── Branch Management ─────────────────────────────────────────────────────────
 
-// CreateBranch creates a new Branch entity from the specified source branch.
+// CreateBranch creates a new Branch row from the specified source branch.
 // If req.FromBranchID is empty, the repository default branch is used.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 // Returns [ErrBranchExists] if a branch with the given name already exists.
-func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) (Branch, error) {
+func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) (models.Branch, error) {
 	repo, err := m.GetRepository(ctx, req.RepositoryID)
 	if err != nil {
-		return Branch{}, fmt.Errorf("CreateBranch: %w", err)
+		return models.Branch{}, fmt.Errorf("CreateBranch: %w", err)
 	}
 
-	// Resolve the source branch.
-	var sourceBranch Branch
+	var sourceBranch models.Branch
 	if req.FromBranchID != "" {
 		sourceBranch, err = m.GetBranch(ctx, req.FromBranchID)
 		if err != nil {
-			return Branch{}, fmt.Errorf("CreateBranch: source branch: %w", err)
+			return models.Branch{}, fmt.Errorf("CreateBranch: source branch: %w", err)
 		}
 	} else {
 		sourceBranch, err = m.defaultBranch(ctx, repo.ID)
 		if err != nil {
-			return Branch{}, fmt.Errorf("CreateBranch: default branch: %w", err)
+			return models.Branch{}, fmt.Errorf("CreateBranch: default branch: %w", err)
 		}
 	}
 
-	// Guard: reject duplicate branch names.
-	existing, err := m.listBranchesByRepo(ctx, repo.ID)
-	if err != nil {
-		return Branch{}, fmt.Errorf("CreateBranch: list branches: %w", err)
+	var count int64
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ? AND name = ? AND NOT deleted", repo.ID, req.Name).
+		Count(&count).Error; err != nil {
+		return models.Branch{}, fmt.Errorf("CreateBranch: check existing: %w", err)
 	}
-	for _, b := range existing {
-		if entitygraph.StringProp(b.Properties, "name") == req.Name {
-			return Branch{}, ErrBranchExists
-		}
+	if count > 0 {
+		return models.Branch{}, ErrBranchExists
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	branchProps := map[string]any{
-		"name":           req.Name,
-		"is_default":     false,
-		"head_commit_id": sourceBranch.HeadCommitID,
-		"created_at":     now,
-		"updated_at":     now,
-	}
-	if req.WorkflowRunID != "" {
-		branchProps["workflow_run_id"] = req.WorkflowRunID
-	}
-	// Copy sha from the source branch so callers can read the tip SHA off the
-	// Branch entity directly without a follow-up Commit lookup.
-	// sourceBranch.SHA is populated from the entity's "sha" property, which is
-	// set both by import (stub branches) and by advanceBranchHead (merged/
-	// written commits).
-	if sourceBranch.SHA != "" {
-		branchProps["sha"] = sourceBranch.SHA
-	} else if sourceBranch.HeadCommitID != "" {
-		// Fallback for branches that pre-date the sha property: resolve from the
-		// linked Commit entity.
-		if commitEntity, ceErr := m.dm.GetEntity(ctx, sourceBranch.HeadCommitID); ceErr == nil {
-			if sha := entitygraph.StringProp(commitEntity.Properties, "sha"); sha != "" {
-				branchProps["sha"] = sha
-			}
-		}
-	}
-	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Branch",
-		Properties: branchProps,
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repo.ID},
-		},
+	now := models.NowRFC3339()
+	row := gormstore.BranchToRow(models.Branch{
+		Name:          req.Name,
+		IsDefault:     false,
+		HeadCommitID:  sourceBranch.HeadCommitID,
+		SHA:           sourceBranch.SHA,
+		WorkflowRunID: req.WorkflowRunID,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	})
-	if err != nil {
-		return Branch{}, fmt.Errorf("CreateBranch: create entity: %w", err)
+	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&row).Error; err != nil {
+		return models.Branch{}, fmt.Errorf("CreateBranch: create: %w", err)
 	}
-
-	// If the source branch has a HEAD commit, link this new branch to it too.
-	if sourceBranch.HeadCommitID != "" {
-		if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			Name:   "points_to",
-			FromID: branchEntity.ID,
-			ToID:   sourceBranch.HeadCommitID,
-		}); relErr != nil {
-			return Branch{}, fmt.Errorf("CreateBranch: link head commit: %w", relErr)
-		}
-	}
-
-	// Create the forward has_branch edge (repo → branch) so listBranchesByRepo
-	// can locate it via RelationshipFilter{Name:"has_branch", FromID: repoID}.
-	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   "has_branch",
-		FromID: repo.ID,
-		ToID:   branchEntity.ID,
-	}); relErr != nil {
-		return Branch{}, fmt.Errorf("CreateBranch: link has_branch: %w", relErr)
-	}
-
-	return entityToBranch(branchEntity, repo.ID), nil
+	return gormstore.BranchFromRow(row), nil
 }
 
-// GetBranch retrieves a Branch entity by its entitygraph ID.
+// GetBranch retrieves a Branch row by its ID.
 // Returns [ErrBranchNotFound] if no branch with that ID exists.
-func (m *gitManager) GetBranch(ctx context.Context, branchID string) (Branch, error) {
-	e, err := m.dm.GetEntity(ctx, branchID)
+func (m *gitManager) GetBranch(ctx context.Context, branchID string) (models.Branch, error) {
+	var row gormstore.BranchRow
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("id = ? AND NOT deleted", branchID).First(&row).Error
 	if err != nil {
-		return Branch{}, ErrBranchNotFound
-	}
-	if e.TypeID != "Branch" {
-		return Branch{}, ErrBranchNotFound
-	}
-	repoID := m.resolveParentID(ctx, branchID, "belongs_to_repository")
-	if repoID == "" {
-		// Fallback: older push-indexed branches were created without the
-		// reverse edge. Look up the forward has_branch edge (repo → branch)
-		// and heal by writing the missing belongs_to_repository edge.
-		rels, relErr := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			Name: "has_branch",
-			ToID: branchID,
-		})
-		if relErr == nil && len(rels) > 0 {
-			repoID = rels[0].FromID
-			_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				Name:   "belongs_to_repository",
-				FromID: branchID,
-				ToID:   repoID,
-			})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Branch{}, ErrBranchNotFound
 		}
+		return models.Branch{}, fmt.Errorf("GetBranch: %w", err)
 	}
-	return entityToBranch(e, repoID), nil
+	return gormstore.BranchFromRow(row), nil
 }
 
-// ListBranches returns all Branch entities for the specified repository.
+// ListBranches returns all Branch rows for the specified repository.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-func (m *gitManager) ListBranches(ctx context.Context, repoID string) ([]Branch, error) {
+func (m *gitManager) ListBranches(ctx context.Context, repoID string) ([]models.Branch, error) {
 	if _, err := m.GetRepository(ctx, repoID); err != nil {
 		return nil, fmt.Errorf("ListBranches: %w", err)
 	}
-	entities, err := m.listBranchesByRepo(ctx, repoID)
+	rows, err := m.listBranchesByRepo(ctx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("ListBranches: %w", err)
 	}
-	out := make([]Branch, len(entities))
-	for i, e := range entities {
-		out[i] = entityToBranch(e, repoID)
+	out := make([]models.Branch, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.BranchFromRow(r)
 	}
 	return out, nil
 }
 
-// GetBranchByName retrieves a Branch entity by its human-readable name.
+// GetBranchByName retrieves a Branch row by its human-readable name.
 // Returns [ErrBranchNotFound] if no branch with that name exists for the
 // specified repository.
-func (m *gitManager) GetBranchByName(ctx context.Context, repoID string, branchName string) (Branch, error) {
-	entities, err := m.listBranchesByRepo(ctx, repoID)
+func (m *gitManager) GetBranchByName(ctx context.Context, repoID string, branchName string) (models.Branch, error) {
+	var row gormstore.BranchRow
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ? AND name = ? AND NOT deleted", repoID, branchName).First(&row).Error
 	if err != nil {
-		return Branch{}, fmt.Errorf("GetBranchByName: %w", err)
-	}
-	for _, e := range entities {
-		if entitygraph.StringProp(e.Properties, "name") == branchName {
-			return entityToBranch(e, repoID), nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Branch{}, ErrBranchNotFound
 		}
+		return models.Branch{}, fmt.Errorf("GetBranchByName: %w", err)
 	}
-	return Branch{}, ErrBranchNotFound
+	return gormstore.BranchFromRow(row), nil
 }
 
-// DeleteBranch removes a Branch entity.
+// DeleteBranch removes a Branch row.
 // Returns [ErrBranchNotFound] if no branch with that ID exists.
 // Returns [ErrDefaultBranchDeleteForbidden] if branchID is the default branch.
 func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
-	e, err := m.dm.GetEntity(ctx, branchID)
+	branch, err := m.GetBranch(ctx, branchID)
 	if err != nil {
-		return ErrBranchNotFound
+		return err
 	}
-	if entitygraph.BoolProp(e.Properties, "is_default") {
+	if branch.IsDefault {
 		return fmt.Errorf("DeleteBranch: %w", ErrDefaultBranchDeleteForbidden)
 	}
 
 	// GIT-022b: Delete branch-scoped documentation edges before removing the
-	// branch entity so no dangling edges are left behind.
-	headCommitID := entitygraph.StringProp(e.Properties, "head_commit_id")
-	m.deleteDocEdgesForBranch(ctx, branchID, headCommitID)
+	// branch row so no dangling edges are left behind.
+	m.deleteDocEdgesForBranch(ctx, branchID, branch.HeadCommitID)
 
-	if err := m.dm.DeleteEntity(ctx, branchID); err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("id = ?", branchID).Update("deleted", true).Error; err != nil {
 		return fmt.Errorf("DeleteBranch: %w", err)
 	}
 	return nil
@@ -197,7 +137,7 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 
 // MergeBranch merges the given branch into the repository's default branch by
 // forwarding the default branch's HEAD commit pointer to the source branch's
-// HEAD commit. Returns the updated default [Branch].
+// HEAD commit. Returns the updated default [models.Branch].
 //
 // The entire advance-head operation runs inside a [RefLocker] lock
 // so that two concurrent MergeBranch calls cannot produce a lost update. The
@@ -209,28 +149,28 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 // Returns [ErrRepoNotInitialised] if no repository entity exists.
 // Returns [ErrMergeConcurrencyConflict] if a concurrent merge advanced the
 // default branch HEAD before this one could complete.
-func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (Branch, error) {
+func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (models.Branch, error) {
 	sourceBranch, err := m.GetBranch(ctx, branchID)
 	if err != nil {
-		return Branch{}, fmt.Errorf("MergeBranch: %w", err)
+		return models.Branch{}, fmt.Errorf("MergeBranch: %w", err)
 	}
 	repo, err := m.GetRepository(ctx, sourceBranch.RepositoryID)
 	if err != nil {
-		return Branch{}, fmt.Errorf("MergeBranch: %w", err)
+		return models.Branch{}, fmt.Errorf("MergeBranch: %w", err)
 	}
 	defaultBranchEntity, err := m.defaultBranch(ctx, repo.ID)
 	if err != nil {
-		return Branch{}, fmt.Errorf("MergeBranch: default branch: %w", err)
+		return models.Branch{}, fmt.Errorf("MergeBranch: default branch: %w", err)
 	}
 	if sourceBranch.HeadCommitID == "" {
 		return defaultBranchEntity, nil
 	}
 
-	var updated Branch
+	var updated models.Branch
 	lockErr := m.locker.WithMergeLock(ctx, func() error {
 		// Re-read the default branch inside the lock so we hold the freshest
 		// HeadCommitID as the CAS guard. This ensures two sequential merges
-		// both succeed; the CAS only fires if the entity was modified by an
+		// both succeed; the CAS only fires if the row was modified by an
 		// out-of-band write (e.g. another service instance).
 		currentDefault, readErr := m.defaultBranch(ctx, repo.ID)
 		if readErr != nil {
@@ -241,7 +181,7 @@ func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (Branch, 
 		return advErr
 	})
 	if lockErr != nil {
-		return Branch{}, fmt.Errorf("MergeBranch: advance default head: %w", lockErr)
+		return models.Branch{}, fmt.Errorf("MergeBranch: advance default head: %w", lockErr)
 	}
 
 	// GIT-022a: Replicate branch-scoped documentation edges (tagged_with,
@@ -260,13 +200,13 @@ func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (Branch, 
 	return updated, nil
 }
 
-// ListBranchesFiltered returns Branch entities for the specified repository
+// ListBranchesFiltered returns Branch rows for the specified repository
 // filtered by [BranchFilter]. When filter.WorkflowRunID is non-empty only
-// branches with the matching workflow_run_id property are returned.
+// branches with the matching workflow_run_id column are returned.
 // When repoID is empty and filter.WorkflowRunID is set the query is
 // cross-repository (used by mwanachama-backend-taskmanager's WorkflowRun closure
 // aggregator).
-func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, filter BranchFilter) ([]Branch, error) {
+func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, filter BranchFilter) ([]models.Branch, error) {
 	if repoID == "" && filter.WorkflowRunID != "" {
 		return m.listBranchesByWorkflowRunID(ctx, filter.WorkflowRunID)
 	}
@@ -286,155 +226,86 @@ func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, fi
 	return out, nil
 }
 
-// listBranchesByWorkflowRunID returns all Branch entities across all
-// repositories whose workflow_run_id property matches runID. Used by the
+// listBranchesByWorkflowRunID returns all Branch rows across all
+// repositories whose workflow_run_id column matches runID. Used by the
 // closure aggregator path where no repository is specified.
-func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID string) ([]Branch, error) {
-	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Branch",
-		Properties: map[string]any{
-			"workflow_run_id": runID,
-		},
-	})
-	if err != nil {
+func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID string) ([]models.Branch, error) {
+	var rows []gormstore.BranchRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("workflow_run_id = ? AND NOT deleted", runID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := make([]Branch, len(entities))
-	for i, e := range entities {
-		out[i] = entityToBranch(e, "")
+	out := make([]models.Branch, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.BranchFromRow(r)
 	}
 	return out, nil
 }
 
 // ── Branch internal helpers ───────────────────────────────────────────────────
 
-// listBranchesByRepo returns all Branch entities linked to the given
-// repositoryID. It first queries the forward has_branch edge (repo→branch)
-// and falls back to the reverse belongs_to_repository edge (branch→repo) for
-// repos imported before the has_branch edge was created on import.
-func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
-	// Primary: forward has_branch edges (repo → branch).
-	forwardRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name:   "has_branch",
-		FromID: repositoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if len(forwardRels) > 0 {
-		out := make([]entitygraph.Entity, 0, len(forwardRels))
-		for _, r := range forwardRels {
-			e, err := m.dm.GetEntity(ctx, r.ToID)
-			if err != nil {
-				continue // skip soft-deleted branches
-			}
-			out = append(out, e)
-		}
-		return out, nil
-	}
-
-	// Fallback: reverse belongs_to_repository edges (branch → repo).
-	// Used for repos that were imported before the has_branch edge was written.
-	reverseRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name: "belongs_to_repository",
-		ToID: repositoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]entitygraph.Entity, 0, len(reverseRels))
-	for _, r := range reverseRels {
-		e, err := m.dm.GetEntity(ctx, r.FromID)
-		if err != nil {
-			continue // skip soft-deleted branches
-		}
-		if e.TypeID != "Branch" {
-			continue // ignore non-branch entities sharing the relationship name
-		}
-		out = append(out, e)
-	}
-	return out, nil
+// listBranchesByRepo returns all Branch rows linked to the given
+// repositoryID.
+func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]gormstore.BranchRow, error) {
+	var rows []gormstore.BranchRow
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ? AND NOT deleted", repositoryID).Find(&rows).Error
+	return rows, err
 }
 
-// defaultBranch returns the Branch entity whose is_default property is true
-// for the given repository.
-func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (Branch, error) {
-	branches, err := m.listBranchesByRepo(ctx, repositoryID)
+// defaultBranch returns the Branch row whose is_default column is true for
+// the given repository.
+func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (models.Branch, error) {
+	var row gormstore.BranchRow
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ? AND is_default AND NOT deleted", repositoryID).First(&row).Error
 	if err != nil {
-		return Branch{}, err
-	}
-	for _, b := range branches {
-		if entitygraph.BoolProp(b.Properties, "is_default") {
-			return entityToBranch(b, repositoryID), nil
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Branch{}, ErrBranchNotFound
 		}
+		return models.Branch{}, err
 	}
-	return Branch{}, ErrBranchNotFound
+	return gormstore.BranchFromRow(row), nil
 }
 
-// advanceBranchHead updates a branch's points_to edge, head_commit_id, and
-// sha properties to point at newCommitID. The sha is copied from the Commit
-// entity so callers can read the branch tip SHA directly off the Branch
-// entity without an extra graph traversal. Returns the updated Branch.
+// advanceBranchHead updates a branch's head_commit_id and sha columns to
+// point at newCommitID. The sha is copied from the Commit row so callers can
+// read the branch tip SHA directly off the Branch row without an extra
+// query. Returns the updated Branch.
 //
-// expectedHeadCommitID is a CAS guard: if non-empty, the current
-// head_commit_id on the branch must match before the update proceeds.
-// Returns [ErrMergeConcurrencyConflict] if the check fails.
+// expectedHeadCommitID is a CAS guard: if non-empty, the update only applies
+// when the branch's current head_commit_id still matches it — a single
+// conditional UPDATE, strictly stronger than the old read-then-write check
+// (no window between the read and the write for a concurrent writer to land
+// in). Returns [ErrMergeConcurrencyConflict] if the row didn't match.
 // Pass "" to skip the check (used by IndexPushedBranch).
-func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitID, expectedHeadCommitID string) (Branch, error) {
-	// CAS guard — only enforce when the caller supplies an expected value.
-	if expectedHeadCommitID != "" {
-		current, err := m.dm.GetEntity(ctx, branchID)
-		if err != nil {
-			return Branch{}, fmt.Errorf("advanceBranchHead: read current branch: %w", err)
-		}
-		if entitygraph.StringProp(current.Properties, "head_commit_id") != expectedHeadCommitID {
-			return Branch{}, ErrMergeConcurrencyConflict
-		}
+func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitID, expectedHeadCommitID string) (models.Branch, error) {
+	var commitRow gormstore.CommitRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
+		Where("id = ?", newCommitID).First(&commitRow).Error; err != nil {
+		return models.Branch{}, fmt.Errorf("advanceBranchHead: get commit: %w", err)
 	}
 
-	// Remove old points_to edge if it exists.
-	oldRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name:   "points_to",
-		FromID: branchID,
-	})
-	if err == nil {
-		for _, r := range oldRels {
-			_ = m.dm.DeleteRelationship(ctx, r.ID)
-		}
-	}
-
-	// Create the new points_to edge.
-	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   "points_to",
-		FromID: branchID,
-		ToID:   newCommitID,
-	}); err != nil {
-		return Branch{}, fmt.Errorf("advanceBranchHead: link commit: %w", err)
-	}
-
-	// Fetch the new Commit entity to read its real git SHA.
-	commitEntity, err := m.dm.GetEntity(ctx, newCommitID)
-	if err != nil {
-		return Branch{}, fmt.Errorf("advanceBranchHead: get commit: %w", err)
-	}
-	commitSHA := entitygraph.StringProp(commitEntity.Properties, "sha")
-
-	// Update head_commit_id, sha, and updated_at in a single call.
-	now := time.Now().UTC().Format(time.RFC3339)
-	updateProps := map[string]any{
+	now := models.NowRFC3339()
+	updates := map[string]any{
 		"head_commit_id": newCommitID,
 		"updated_at":     now,
 	}
-	if commitSHA != "" {
-		updateProps["sha"] = commitSHA
+	if commitRow.SHA != "" {
+		updates["sha"] = commitRow.SHA
 	}
-	updated, err := m.dm.UpdateEntity(ctx, branchID, entitygraph.UpdateEntityRequest{
-		Properties: updateProps,
-	})
-	if err != nil {
-		return Branch{}, fmt.Errorf("advanceBranchHead: update entity: %w", err)
+
+	q := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchID)
+	if expectedHeadCommitID != "" {
+		q = q.Where("head_commit_id = ?", expectedHeadCommitID)
 	}
-	repoID := m.resolveParentID(ctx, branchID, "belongs_to_repository")
-	return entityToBranch(updated, repoID), nil
+	result := q.Updates(updates)
+	if result.Error != nil {
+		return models.Branch{}, fmt.Errorf("advanceBranchHead: update: %w", result.Error)
+	}
+	if expectedHeadCommitID != "" && result.RowsAffected == 0 {
+		return models.Branch{}, ErrMergeConcurrencyConflict
+	}
+
+	return m.GetBranch(ctx, branchID)
 }

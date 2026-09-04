@@ -3,24 +3,22 @@
 // A single Agency/AI-aligned interface: all domain operations — repository
 // lifecycle, branches, tags, merge requests, file writes, and history — are
 // methods on [GitManager]. Callers (an HTTP handler in mwanachama-backend-api-gateway)
-// hold the interface, never the concrete type.
-//
-// The concrete gitManager implementation is added in a later port step,
-// wired against [github.com/aosanya/mwanachama-backend-shared/entitygraph]'s
-// DataManager so the manager stays storage-agnostic.
+// hold the interface, never the concrete type. The method set is unchanged
+// across the entitygraph->GORM storage migration — see this repo's
+// CLAUDE.md — only [NewGitManager]'s signature and everything behind it
+// changed shape.
 package mwanachamagit
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+
+	"github.com/aosanya/mwanachama-backend-git/models"
 	"github.com/aosanya/mwanachama-backend-shared/events"
 )
-
-// GitSchemaManager is a type alias for [entitygraph.SchemaManager].
-// Used by wiring code to seed [DefaultGitSchema] on startup via SetSchema.
-type GitSchemaManager = entitygraph.SchemaManager
 
 // GitManager is the primary interface for Git-like repository management.
 // HTTP handlers hold this interface — never the concrete type.
@@ -35,23 +33,23 @@ type GitManager interface {
 	// InitRepo creates a new Repository entity.
 	// Returns [ErrRepoAlreadyExists] if a repository with the same name already exists.
 	// Publishes "git.repo.created" after a successful write.
-	InitRepo(ctx context.Context, req CreateRepoRequest) (Repository, error)
+	InitRepo(ctx context.Context, req CreateRepoRequest) (models.Repository, error)
 
 	// ListRepositories returns all Repository entities.
-	ListRepositories(ctx context.Context) ([]Repository, error)
+	ListRepositories(ctx context.Context) ([]models.Repository, error)
 
 	// GetRepository retrieves a Repository entity by its ID.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-	GetRepository(ctx context.Context, repoID string) (Repository, error)
+	GetRepository(ctx context.Context, repoID string) (models.Repository, error)
 
 	// GetRepositoryByName retrieves a Repository entity by its human-readable
 	// name. Returns [ErrRepoNotInitialised] if no repository with that name
 	// exists.
-	GetRepositoryByName(ctx context.Context, repoName string) (Repository, error)
+	GetRepositoryByName(ctx context.Context, repoName string) (models.Repository, error)
 
 	// GetBranchByName retrieves a Branch entity by its human-readable name.
 	// Returns [ErrBranchNotFound] if no branch with that name exists.
-	GetBranchByName(ctx context.Context, repoID string, branchName string) (Branch, error)
+	GetBranchByName(ctx context.Context, repoID string, branchName string) (models.Branch, error)
 
 	// DeleteRepo marks the specified repository entity as archived (soft delete).
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
@@ -67,15 +65,15 @@ type GitManager interface {
 	// If req.FromBranchID is empty, the repository default branch is used.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 	// Returns [ErrBranchExists] if a branch with the given name already exists.
-	CreateBranch(ctx context.Context, req CreateBranchRequest) (Branch, error)
+	CreateBranch(ctx context.Context, req CreateBranchRequest) (models.Branch, error)
 
-	// GetBranch retrieves a Branch entity by its entitygraph ID.
+	// GetBranch retrieves a Branch entity by its ID.
 	// Returns [ErrBranchNotFound] if no branch with that ID exists.
-	GetBranch(ctx context.Context, branchID string) (Branch, error)
+	GetBranch(ctx context.Context, branchID string) (models.Branch, error)
 
 	// ListBranches returns all Branch entities for the specified repository.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-	ListBranches(ctx context.Context, repoID string) ([]Branch, error)
+	ListBranches(ctx context.Context, repoID string) ([]models.Branch, error)
 
 	// DeleteBranch removes a Branch entity.
 	// Returns [ErrBranchNotFound] if no branch with that ID exists.
@@ -87,13 +85,13 @@ type GitManager interface {
 	// Returns [ErrMergeConflict] with conflicting paths if a rebase conflict
 	// cannot be auto-resolved.
 	// Returns [ErrBranchNotFound] if no branch with that ID exists.
-	MergeBranch(ctx context.Context, branchID string) (Branch, error)
+	MergeBranch(ctx context.Context, branchID string) (models.Branch, error)
 
 	// ListBranchesFiltered returns Branch entities for the specified repository
 	// filtered by [BranchFilter]. When filter.WorkflowRunID is non-empty only
 	// branches with the matching workflow_run_id property are returned.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-	ListBranchesFiltered(ctx context.Context, repoID string, filter BranchFilter) ([]Branch, error)
+	ListBranchesFiltered(ctx context.Context, repoID string, filter BranchFilter) ([]models.Branch, error)
 
 	// ── Merge Request Management (FEAT-20260602-001) ──────────────────────────
 
@@ -102,15 +100,15 @@ type GitManager interface {
 	// Publishes [TopicMergeRequested] on success.
 	// Returns [ErrRepoNotInitialised] if the repository does not exist.
 	// Returns [ErrBranchNotFound] if the source or target branch does not exist.
-	CreateMergeRequest(ctx context.Context, req CreateMergeRequestRequest) (MergeRequest, error)
+	CreateMergeRequest(ctx context.Context, req CreateMergeRequestRequest) (models.MergeRequest, error)
 
-	// GetMergeRequest retrieves a [MergeRequest] entity by its entitygraph ID.
+	// GetMergeRequest retrieves a [MergeRequest] entity by its ID.
 	// Returns [ErrMergeRequestNotFound] if no MR with that ID exists.
-	GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
+	GetMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error)
 
 	// ListMergeRequests returns [MergeRequest] entities matching the given
 	// filter. An empty filter returns every MR.
-	ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]MergeRequest, error)
+	ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]models.MergeRequest, error)
 
 	// CompleteMergeRequest performs the merge of the MR's source branch into
 	// its target branch, transitions the MR status to "merged", and publishes
@@ -118,13 +116,13 @@ type GitManager interface {
 	// [TopicMergeFailed].
 	// Returns [ErrMergeRequestNotFound] if no MR with that ID exists.
 	// Returns [ErrMergeRequestNotOpen] if the MR is not in "open" status.
-	CompleteMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
+	CompleteMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error)
 
 	// CloseMergeRequest transitions an open MR to "closed" without merging.
 	// Used to abandon an MR. No event is published.
 	// Returns [ErrMergeRequestNotFound] if no MR with that ID exists.
 	// Returns [ErrMergeRequestNotOpen] if the MR is not in "open" status.
-	CloseMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
+	CloseMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error)
 
 	// ── Workflow-run rollback (FEAT-20260602-004) ─────────────────────────────
 
@@ -149,15 +147,15 @@ type GitManager interface {
 	// Returns [ErrTagAlreadyExists] if a tag with the given name already exists.
 	// Returns [ErrBranchNotFound] if req.CommitID does not resolve to a Commit
 	// entity.
-	CreateTag(ctx context.Context, req CreateTagRequest) (Tag, error)
+	CreateTag(ctx context.Context, req CreateTagRequest) (models.Tag, error)
 
-	// GetTag retrieves a Tag entity by its entitygraph ID.
+	// GetTag retrieves a Tag entity by its ID.
 	// Returns [ErrTagNotFound] if no tag with that ID exists.
-	GetTag(ctx context.Context, tagID string) (Tag, error)
+	GetTag(ctx context.Context, tagID string) (models.Tag, error)
 
 	// ListTags returns all Tag entities for the specified repository.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-	ListTags(ctx context.Context, repoID string) ([]Tag, error)
+	ListTags(ctx context.Context, repoID string) ([]models.Tag, error)
 
 	// DeleteTag removes a Tag entity.
 	// Returns [ErrTagNotFound] if no tag with that ID exists.
@@ -166,20 +164,20 @@ type GitManager interface {
 	// ── File Operations ───────────────────────────────────────────────────────
 
 	// WriteFile commits a single file to the specified branch, creating
-	// Commit, Tree, and Blob entities in the entity graph.
+	// Commit, Tree, and Blob rows.
 	// Returns [ErrBranchNotFound] if the branch does not exist.
 	// Returns [ErrRepoNotInitialised] if no repository entity exists.
-	WriteFile(ctx context.Context, req WriteFileRequest) (Commit, error)
+	WriteFile(ctx context.Context, req WriteFileRequest) (models.Commit, error)
 
 	// ReadFile retrieves the Blob entity for a file at the branch's current HEAD.
 	// Returns [ErrBranchNotFound] if the branch does not exist.
 	// Returns [ErrFileNotFound] if the path does not exist on the branch.
-	ReadFile(ctx context.Context, branchID, path string) (Blob, error)
+	ReadFile(ctx context.Context, branchID, path string) (models.Blob, error)
 
 	// DeleteFile removes a file from the specified branch by creating a deletion
 	// commit. Returns [ErrBranchNotFound] if the branch does not exist.
 	// Returns [ErrFileNotFound] if the path does not exist on the branch.
-	DeleteFile(ctx context.Context, req DeleteFileRequest) (Commit, error)
+	DeleteFile(ctx context.Context, req DeleteFileRequest) (models.Commit, error)
 
 	// ListDirectory returns the immediate children (files and sub-directories)
 	// at the given path on the branch.
@@ -201,19 +199,19 @@ type GitManager interface {
 
 	// ── Repository Import ───────────────────────────────────────────────
 
-	// ImportRepo begins an async import of a public Git repository into the
-	// entity graph. It returns immediately with an ImportJob whose ID can be
-	// used to poll GetImportStatus.
+	// ImportRepo begins an async import of a public Git repository.
+	// It returns immediately with an ImportJob whose ID can be used to poll
+	// GetImportStatus.
 	//
 	// Returns [ErrRepoAlreadyExists] if a Repository entity with the same name
 	// already exists.
 	// Returns [ErrImportInProgress] if a job with status "pending" or "running"
 	// already exists.
-	ImportRepo(ctx context.Context, req ImportRepoRequest) (ImportJob, error)
+	ImportRepo(ctx context.Context, req ImportRepoRequest) (models.ImportJob, error)
 
 	// GetImportStatus returns the current state of an import job.
 	// Returns [ErrImportJobNotFound] if no job with the given ID exists.
-	GetImportStatus(ctx context.Context, jobID string) (ImportJob, error)
+	GetImportStatus(ctx context.Context, jobID string) (models.ImportJob, error)
 
 	// CancelImport cancels a pending or running import job. The background
 	// goroutine's context is cancelled and the temp clone directory is removed.
@@ -229,16 +227,16 @@ type GitManager interface {
 	// Returns [ErrKeywordAlreadyExists] if a keyword with the same name exists
 	// under the same parent (or at root level when ParentID is empty).
 	// Returns [ErrKeywordNotFound] if req.ParentID does not resolve to a keyword.
-	CreateKeyword(ctx context.Context, req CreateKeywordRequest) (Keyword, error)
+	CreateKeyword(ctx context.Context, req CreateKeywordRequest) (models.Keyword, error)
 
-	// GetKeyword retrieves a Keyword entity by its entitygraph ID.
+	// GetKeyword retrieves a Keyword entity by its ID.
 	// Returns [ErrKeywordNotFound] if no keyword with that ID exists.
-	GetKeyword(ctx context.Context, keywordID string) (Keyword, error)
+	GetKeyword(ctx context.Context, keywordID string) (models.Keyword, error)
 
 	// ListKeywords returns Keyword entities matching the given filter.
 	// When filter.ParentID is empty, root keywords (no parent) are returned.
 	// Set filter.ParentID to a keyword ID to list its direct children.
-	ListKeywords(ctx context.Context, filter KeywordFilter) ([]Keyword, error)
+	ListKeywords(ctx context.Context, filter KeywordFilter) ([]models.Keyword, error)
 
 	// GetKeywordTree returns the full taxonomy subtree rooted at the given
 	// keywordID, or the full forest of root keywords when keywordID is empty.
@@ -247,11 +245,11 @@ type GitManager interface {
 
 	// UpdateKeyword updates the mutable fields of a Keyword entity.
 	// Returns [ErrKeywordNotFound] if no keyword with that ID exists.
-	UpdateKeyword(ctx context.Context, keywordID string, req UpdateKeywordRequest) (Keyword, error)
+	UpdateKeyword(ctx context.Context, keywordID string, req UpdateKeywordRequest) (models.Keyword, error)
 
-	// DeleteKeyword removes a Keyword entity and all its has_child edges.
-	// Children are re-rooted to the deleted keyword's parent (or become root
-	// keywords if the deleted keyword had no parent).
+	// DeleteKeyword removes a Keyword entity. Children are re-parented to the
+	// deleted keyword's parent (or become root keywords if the deleted
+	// keyword had no parent).
 	// Returns [ErrKeywordNotFound] if no keyword with that ID exists.
 	DeleteKeyword(ctx context.Context, keywordID string) error
 
@@ -259,8 +257,7 @@ type GitManager interface {
 
 	// CreateEdge creates a documentation edge between two entities on the
 	// specified branch. Supported relationship names: "tagged_with",
-	// "documents", "documented_by", "depends_on", "imported_by".
-	// The inverse edge is auto-created by entitygraph.DataManager.
+	// "references", "documents", "documented_by", "depends_on", "imported_by".
 	// Returns [ErrBranchNotFound] if the branch does not exist.
 	// Returns [ErrInvalidRelationship] if the relationship name is not a valid
 	// documentation edge type.
@@ -282,11 +279,12 @@ type GitManager interface {
 	// silently corrected. When depth is 0 it is treated as 1.
 	//
 	// Returns [ErrBranchNotFound] if the branch does not exist.
-	// Returns [ErrEntityNotFound] if entityID does not exist in the graph.
+	// Returns [ErrEntityNotFound] if entityID does not exist.
 	GetNeighborhood(ctx context.Context, branchID, entityID string, depth int) (GraphResult, error)
 
-	// SearchByKeywords returns entities tagged (via "tagged_with" edges) with
-	// the specified keywords, optionally cascading down the keyword hierarchy.
+	// SearchByKeywords returns Blob entities tagged (via "tagged_with" edges)
+	// with the specified keywords, optionally cascading down the keyword
+	// hierarchy.
 	//
 	// When req.Cascade is true, each keyword in req.Keywords is expanded to
 	// include all of its descendants before matching. When req.MatchMode is
@@ -315,21 +313,21 @@ type GitManager interface {
 	// The method returns immediately with a [FetchBranchJob] whose ID can be
 	// passed to [GitManager.GetFetchBranchStatus] to poll for progress. A
 	// background goroutine deepens the bare shallow clone, walks the tip tree,
-	// and materialises Commit, Tree, and Blob entities, transitioning the
-	// branch status through "fetching" → "fetched" | "fetch_failed".
+	// and materialises Commit, Tree, and Blob rows, transitioning the
+	// branch status through "fetching" -> "fetched" | "fetch_failed".
 	//
 	// Returns [ErrBranchNotFound] if no branch with req.BranchID exists.
 	// Returns [ErrBranchAlreadyFetched] if the branch status is "fetching" or
 	// "fetched" — callers should poll the existing job instead.
-	FetchBranch(ctx context.Context, req FetchBranchRequest) (FetchBranchJob, error)
+	FetchBranch(ctx context.Context, req FetchBranchRequest) (models.FetchBranchJob, error)
 
 	// GetFetchBranchStatus returns the current state of a fetch job.
 	// Returns [ErrImportJobNotFound] if no job with the given ID exists.
-	GetFetchBranchStatus(ctx context.Context, jobID string) (FetchBranchJob, error)
+	GetFetchBranchStatus(ctx context.Context, jobID string) (models.FetchBranchJob, error)
 
 	// IndexPushedBranch indexes the commits that were just pushed and
-	// materialises Commit, Tree, and Blob entities in the entity graph, then
-	// advances the branch HEAD pointer.
+	// materialises Commit, Tree, and Blob rows, then advances the branch HEAD
+	// pointer.
 	// repoName is the human-readable repository name (not an entity ID).
 	// branchRef is the full ref name, e.g. "refs/heads/main".
 	// oldSHA is the previous branch tip (all-zeros string for a new branch).
@@ -346,10 +344,10 @@ type GitManager interface {
 }
 
 // BlobSearcher is the interface satisfied by the full-text search backend
-// (Postgres tsvector/ts_rank — see GIT task G7). It is injected into the
-// concrete GitManager implementation at construction time so the core
-// package stays backend-agnostic. A nil BlobSearcher causes SearchBlobs to
-// return an empty result without error.
+// (Postgres tsvector/ts_rank — see git_blobsearch_postgres.go). It is
+// injected into the concrete GitManager implementation at construction time
+// so the core package stays backend-agnostic. A nil BlobSearcher causes
+// SearchBlobs to return an empty result without error.
 type BlobSearcher interface {
 	// Search runs a ranked full-text search against the blob store.
 	Search(ctx context.Context, query string, limit int) ([]BlobSearchResult, error)
@@ -391,55 +389,48 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, fn func() error) error 
 	}
 }
 
-// gitManager is the concrete implementation of [GitManager].
-// It wraps [entitygraph.DataManager] to expose Git-specific convenience
-// methods over the entity graph. Method bodies were ported across G4
-// (pure-entitygraph impl files) and G5 (go-git-touching impl files, plus
-// FetchBranch pulled forward from G6). IndexPushedBranch (G6 — real
-// git-push wire protocol) is a deliberate "not implemented" stub; SearchBlobs
-// (G7) works today and gracefully no-ops until a real BlobSearcher is
-// injected.
-// dataManager is entitygraph.DataManager plus the relationship methods this
-// package needs — CreateRelationship/DeleteRelationship/ListRelationships
-// are no longer part of the shared interface (see its doc comment), since
-// each consumer knows its own fixed set of relationship labels.
-type dataManager interface {
-	entitygraph.DataManager
-	CreateRelationship(ctx context.Context, req entitygraph.CreateRelationshipRequest) (entitygraph.Relationship, error)
-	DeleteRelationship(ctx context.Context, relationshipID string) error
-	ListRelationships(ctx context.Context, filter entitygraph.RelationshipFilter) ([]entitygraph.Relationship, error)
-}
-
+// gitManager is the concrete implementation of [GitManager], backed by
+// GORM-mapped relational tables (see gormstore/) rather than
+// entitygraph.DataManager — see this repo's CLAUDE.md for the migration
+// record. IndexPushedBranch (G6 — real git-push wire protocol) is a
+// deliberate "not implemented" stub; SearchBlobs (G7) works today and
+// gracefully no-ops until a real BlobSearcher is injected.
 type gitManager struct {
-	dm        dataManager      // graph CRUD — injected by wiring code
-	sm        GitSchemaManager // schema versioning — injected by wiring code
+	db        *gorm.DB
+	tables    TableNames
 	publisher events.Publisher // optional; nil = skip event publishing
 	locker    RefLocker        // serialises default-branch mutations
 	searcher  BlobSearcher     // optional; nil = SearchBlobs returns empty
 }
 
-// NewGitManager constructs a [GitManager] backed by the given
-// [entitygraph.DataManager] and [GitSchemaManager].
+// NewGitManager constructs a [GitManager] reading and writing the sixteen
+// tables named by t (see [DefaultTableNames]). Callers must run [Migrate]
+// against the same db and t before use.
+//
 // pub may be nil — events are skipped when no publisher is set.
 // locker may be nil — a default in-process [mutexLocker] is used.
 // searcher may be nil — SearchBlobs returns an empty result without error.
+// Returns an error if db is nil.
 func NewGitManager(
-	dm dataManager,
-	sm GitSchemaManager,
+	db *gorm.DB,
+	t TableNames,
 	pub events.Publisher,
 	locker RefLocker,
 	searcher BlobSearcher,
-) GitManager {
+) (GitManager, error) {
+	if db == nil {
+		return nil, fmt.Errorf("NewGitManager: db must not be nil")
+	}
 	if locker == nil {
 		locker = &mutexLocker{}
 	}
 	return &gitManager{
-		dm:        dm,
-		sm:        sm,
+		db:        db,
+		tables:    t,
 		publisher: pub,
 		locker:    locker,
 		searcher:  searcher,
-	}
+	}, nil
 }
 
 // publish emits a topic/payload pair via the optional [events.Publisher].

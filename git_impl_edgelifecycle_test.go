@@ -12,26 +12,30 @@ import (
 	"context"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
 )
 
-// countEdgesByBranchID returns the number of relationships with the given
-// name and FromID whose "branch_id" property equals targetBranchID.
-func countEdgesByBranchID(t *testing.T, m *gitManager, fromID, edgeName, targetBranchID string) int {
+// countTaggedWith returns the number of tagged_with rows for blobID scoped
+// to targetBranchID.
+func countTaggedWith(t *testing.T, m *gitManager, blobID, targetBranchID string) int64 {
 	t.Helper()
-	ctx := context.Background()
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: fromID,
-		Name:   edgeName,
-	})
-	if err != nil {
-		t.Fatalf("countEdgesByBranchID: ListRelationships: %v", err)
+	var count int64
+	if err := m.db.WithContext(context.Background()).Table(m.tables.BlobKeywordTags).
+		Where("blob_id = ? AND branch_id = ?", blobID, targetBranchID).Count(&count).Error; err != nil {
+		t.Fatalf("countTaggedWith: %v", err)
 	}
-	count := 0
-	for _, r := range rels {
-		if v, ok := r.Properties["branch_id"]; ok && v == targetBranchID {
-			count++
-		}
+	return count
+}
+
+// countReferences returns the number of "references" rows from blobID scoped
+// to targetBranchID.
+func countReferences(t *testing.T, m *gitManager, blobID, targetBranchID string) int64 {
+	t.Helper()
+	var count int64
+	if err := m.db.WithContext(context.Background()).Table(m.tables.BlobReferences).
+		Where("from_blob_id = ? AND branch_id = ? AND name = ?", blobID, targetBranchID, "references").
+		Count(&count).Error; err != nil {
+		t.Fatalf("countReferences: %v", err)
 	}
 	return count
 }
@@ -60,7 +64,7 @@ func writeTestFile(t *testing.T, m *gitManager, branchID, path, content string) 
 
 func TestEdgeLifecycle_022a_TaggedWith(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -84,10 +88,10 @@ func TestEdgeLifecycle_022a_TaggedWith(t *testing.T) {
 		t.Fatalf("CreateEdge tagged_with: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 1 {
 		t.Fatalf("before merge: want 1 tagged_with on task branch, got %d", got)
 	}
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", defaultBranchID); got != 0 {
+	if got := countTaggedWith(t, m, blobID, defaultBranchID); got != 0 {
 		t.Fatalf("before merge: want 0 tagged_with on default branch, got %d", got)
 	}
 
@@ -95,10 +99,10 @@ func TestEdgeLifecycle_022a_TaggedWith(t *testing.T) {
 		t.Fatalf("MergeBranch: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", defaultBranchID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, defaultBranchID); got != 1 {
 		t.Fatalf("after merge: want 1 tagged_with on default branch, got %d", got)
 	}
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 1 {
 		t.Fatalf("after merge: task-branch tagged_with should still exist, got %d", got)
 	}
 }
@@ -108,7 +112,7 @@ func TestEdgeLifecycle_022a_TaggedWith(t *testing.T) {
 // carries its descriptor along.
 func TestEdgeLifecycle_022a_References(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -131,7 +135,7 @@ func TestEdgeLifecycle_022a_References(t *testing.T) {
 		t.Fatalf("CreateEdge references: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobB, "references", defaultBranchID); got != 0 {
+	if got := countReferences(t, m, blobB, defaultBranchID); got != 0 {
 		t.Fatalf("before merge: want 0 references on default branch, got %d", got)
 	}
 
@@ -139,18 +143,17 @@ func TestEdgeLifecycle_022a_References(t *testing.T) {
 		t.Fatalf("MergeBranch: %v", err)
 	}
 
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: blobB, Name: "references",
-	})
-	if err != nil {
-		t.Fatalf("ListRelationships: %v", err)
+	var rows []gormstore.BlobReferenceRow
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
+		Where("from_blob_id = ? AND name = ?", blobB, "references").Find(&rows).Error; err != nil {
+		t.Fatalf("query BlobReferences: %v", err)
 	}
 	var found bool
-	for _, r := range rels {
-		if v, ok := r.Properties["branch_id"]; ok && v == defaultBranchID {
+	for _, r := range rows {
+		if r.BranchID == defaultBranchID {
 			found = true
-			if d, ok := r.Properties["descriptor"]; !ok || d != "depends_on" {
-				t.Errorf("replicated references edge: descriptor = %v, want %q", d, "depends_on")
+			if r.Descriptor != "depends_on" {
+				t.Errorf("replicated references edge: descriptor = %q, want %q", r.Descriptor, "depends_on")
 			}
 		}
 	}
@@ -161,7 +164,7 @@ func TestEdgeLifecycle_022a_References(t *testing.T) {
 
 func TestEdgeLifecycle_022a_NoEdges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -181,7 +184,7 @@ func TestEdgeLifecycle_022a_NoEdges(t *testing.T) {
 
 func TestEdgeLifecycle_022b_DeleteBranchCleansEdges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -202,7 +205,7 @@ func TestEdgeLifecycle_022b_DeleteBranchCleansEdges(t *testing.T) {
 		t.Fatalf("CreateEdge: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 1 {
 		t.Fatalf("before DeleteBranch: want 1 edge, got %d", got)
 	}
 
@@ -210,7 +213,7 @@ func TestEdgeLifecycle_022b_DeleteBranchCleansEdges(t *testing.T) {
 		t.Fatalf("DeleteBranch: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 0 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 0 {
 		t.Fatalf("after DeleteBranch: want 0 edges, got %d", got)
 	}
 }
@@ -220,7 +223,7 @@ func TestEdgeLifecycle_022b_DeleteBranchCleansEdges(t *testing.T) {
 // on the default branch intact.
 func TestEdgeLifecycle_022b_OnlyDeletesScopedEdges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -251,10 +254,10 @@ func TestEdgeLifecycle_022b_OnlyDeletesScopedEdges(t *testing.T) {
 		t.Fatalf("DeleteBranch branchA: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", branchA.ID); got != 0 {
+	if got := countTaggedWith(t, m, blobID, branchA.ID); got != 0 {
 		t.Errorf("after delete branchA: want 0 edges on branchA, got %d", got)
 	}
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", defaultBranchID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, defaultBranchID); got != 1 {
 		t.Errorf("after delete branchA: default-branch edge should survive, got %d", got)
 	}
 }
@@ -263,7 +266,7 @@ func TestEdgeLifecycle_022b_OnlyDeletesScopedEdges(t *testing.T) {
 
 func TestEdgeLifecycle_022c_DeleteFileRemovesEdges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "testrepo"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -284,7 +287,7 @@ func TestEdgeLifecycle_022c_DeleteFileRemovesEdges(t *testing.T) {
 		t.Fatalf("CreateEdge: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 1 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 1 {
 		t.Fatalf("before DeleteFile: want 1 edge, got %d", got)
 	}
 
@@ -294,7 +297,7 @@ func TestEdgeLifecycle_022c_DeleteFileRemovesEdges(t *testing.T) {
 		t.Fatalf("DeleteFile: %v", err)
 	}
 
-	if got := countEdgesByBranchID(t, m, blobID, "tagged_with", taskBranch.ID); got != 0 {
+	if got := countTaggedWith(t, m, blobID, taskBranch.ID); got != 0 {
 		t.Fatalf("after DeleteFile: want 0 edges, got %d", got)
 	}
 }

@@ -1,11 +1,11 @@
 // git_impl_fetchbranch.go implements the lazy import v2 on-demand branch fetch
 // methods on [gitManager] (GIT-023d):
 //
-//   - [GitManager.FetchBranch] — creates a FetchBranchJob entity, transitions
+//   - [GitManager.FetchBranch] — creates a FetchBranchJob row, transitions
 //     the Branch status to "fetching", and launches a background goroutine that
 //     deepens (or re-clones) the bare repository, walks the full commit history
-//     and the tip-commit tree (blob metadata only), then transitions the branch
-//     to "fetched" or "fetch_failed".
+//     and the tip-commit tree (blob metadata only), then transitions the
+//     branch to "fetched" or "fetch_failed".
 //   - [GitManager.GetFetchBranchStatus] — returns the current state of a fetch job.
 package mwanachamagit
 
@@ -14,20 +14,23 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	gogit "github.com/go-git/go-git/v5"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-// fetchJobStatus values for the FetchBranchJob entity "status" property.
+// fetchJobStatus values for the FetchBranchJob row "status" column.
 const (
 	fetchJobStatusPending   = "pending"
 	fetchJobStatusRunning   = "running"
@@ -48,125 +51,83 @@ var fetchJobs = make(map[string]fetchCancelEntry)
 
 // FetchBranch triggers an async on-demand fetch of the full commit history
 // and tip-commit file tree for a branch that is currently in "stub" status.
-// Returns immediately with a [FetchBranchJob]. Returns [ErrBranchAlreadyFetched]
-// if the branch status is "fetching" or "fetched".
-func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (FetchBranchJob, error) {
-	// 1. Fetch the Branch entity by ID.
-	branchEntity, err := m.dm.GetEntity(ctx, req.BranchID)
+// Returns immediately with a [models.FetchBranchJob]. Returns
+// [ErrBranchAlreadyFetched] if the branch status is "fetching" or "fetched".
+func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (models.FetchBranchJob, error) {
+	var branchRow gormstore.BranchRow
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("id = ? AND NOT deleted", req.BranchID).First(&branchRow).Error
 	if err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return FetchBranchJob{}, fmt.Errorf("FetchBranch: branch %s not found", req.BranchID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch: branch %s not found", req.BranchID)
 		}
-		return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: get branch entity: %w", req.BranchID, err)
+		return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: get branch: %w", req.BranchID, err)
 	}
-	branchName, _ := branchEntity.Properties["name"].(string)
-	status, _ := branchEntity.Properties["status"].(string)
-	headCommitID, _ := branchEntity.Properties["head_commit_id"].(string)
-
-	// 2. Guard: reject if already fetching or fetched.
-	if status == branchStatusFetching || status == branchStatusFetched {
-		return FetchBranchJob{}, ErrBranchAlreadyFetched
+	if branchRow.Status == branchStatusFetching || branchRow.Status == branchStatusFetched {
+		return models.FetchBranchJob{}, ErrBranchAlreadyFetched
 	}
 
-	// 3. Short-circuit for locally-complete branches.
-	// If the branch already has a HEAD commit, its commits/trees/blobs were
-	// populated by push-indexing (or a prior successful fetch) and the objects
-	// live in the local clone — re-cloning from source_url is unnecessary and
-	// will fail for branches that were pushed to mwanachama-backend-git but never
-	// existed on the import origin.
-	now := time.Now().UTC().Format(time.RFC3339)
-	if headCommitID != "" {
-		log.Printf("[fetchbranch] branch=%q: short-circuit — head_commit_id=%q already set, marking fetched",
-			branchName, headCommitID)
-		jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			TypeID: "FetchBranchJob",
-			Properties: map[string]any{
-				"repo_id":       req.RepoID,
-				"branch_name":   branchName,
-				"status":        fetchJobStatusCompleted,
-				"error_message": "",
-				"created_at":    now,
-				"updated_at":    now,
-			},
+	now := models.NowRFC3339()
+
+	// Short-circuit for locally-complete branches. If the branch already has
+	// a HEAD commit, its commits/trees/blobs were populated by push-indexing
+	// (or a prior successful fetch) and the objects live in the local clone
+	// — re-cloning from source_url is unnecessary.
+	if branchRow.HeadCommitID != nil && *branchRow.HeadCommitID != "" {
+		jobRow := gormstore.FetchBranchJobToRow(models.FetchBranchJob{
+			RepoID: req.RepoID, BranchName: branchRow.Name,
+			Status: fetchJobStatusCompleted, CreatedAt: now, UpdatedAt: now,
 		})
-		if err != nil {
-			return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job entity: %w", req.BranchID, err)
+		if err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Create(&jobRow).Error; err != nil {
+			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job row: %w", req.BranchID, err)
 		}
-		if _, err := m.dm.UpdateEntity(ctx, req.BranchID, entitygraph.UpdateEntityRequest{
-			Properties: map[string]any{
-				"status":     branchStatusFetched,
-				"updated_at": now,
-			},
-		}); err != nil {
-			return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: mark fetched: %w", req.BranchID, err)
+		if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", req.BranchID).
+			Updates(map[string]any{"status": branchStatusFetched, "updated_at": now}).Error; err != nil {
+			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: mark fetched: %w", req.BranchID, err)
 		}
-		return fetchJobFromEntity(jobEntity), nil
+		return gormstore.FetchBranchJobFromRow(jobRow), nil
 	}
 
-	// 4. Create the FetchBranchJob entity.
-	jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "FetchBranchJob",
-		Properties: map[string]any{
-			"repo_id":       req.RepoID,
-			"branch_name":   branchName,
-			"status":        fetchJobStatusPending,
-			"error_message": "",
-			"created_at":    now,
-			"updated_at":    now,
-		},
+	jobRow := gormstore.FetchBranchJobToRow(models.FetchBranchJob{
+		RepoID: req.RepoID, BranchName: branchRow.Name,
+		Status: fetchJobStatusPending, CreatedAt: now, UpdatedAt: now,
 	})
-	if err != nil {
-		return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job entity: %w", req.BranchID, err)
+	if err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Create(&jobRow).Error; err != nil {
+		return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job row: %w", req.BranchID, err)
 	}
-	jobID := jobEntity.ID
-	job := fetchJobFromEntity(jobEntity)
+	jobID := jobRow.ID
+	job := gormstore.FetchBranchJobFromRow(jobRow)
 
-	// 5. Transition Branch status to "fetching".
-	if _, err := m.dm.UpdateEntity(ctx, req.BranchID, entitygraph.UpdateEntityRequest{
-		Properties: map[string]any{
-			"status":     branchStatusFetching,
-			"updated_at": now,
-		},
-	}); err != nil {
-		return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: transition to fetching: %w", req.BranchID, err)
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", req.BranchID).
+		Updates(map[string]any{"status": branchStatusFetching, "updated_at": now}).Error; err != nil {
+		return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: transition to fetching: %w", req.BranchID, err)
 	}
 
-	// 6. Launch background goroutine.
 	jobCtx, cancel := context.WithCancel(context.Background())
 	fetchJobsMu.Lock()
 	fetchJobs[jobID] = fetchCancelEntry{cancel: cancel}
 	fetchJobsMu.Unlock()
 
-	go m.runFetchBranch(jobCtx, jobID, req.RepoID, req.BranchID, branchName)
+	go m.runFetchBranch(jobCtx, jobID, req.RepoID, req.BranchID, branchRow.Name)
 
 	return job, nil
 }
 
 // GetFetchBranchStatus returns the current state of a fetch job.
 // Returns [ErrImportJobNotFound] if no job with the given ID exists.
-func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (FetchBranchJob, error) {
-	entity, err := m.dm.GetEntity(ctx, jobID)
+func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (models.FetchBranchJob, error) {
+	var row gormstore.FetchBranchJobRow
+	err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Where("id = ?", jobID).First(&row).Error
 	if err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return FetchBranchJob{}, ErrImportJobNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.FetchBranchJob{}, ErrImportJobNotFound
 		}
-		return FetchBranchJob{}, fmt.Errorf("GetFetchBranchStatus %s: %w", jobID, err)
+		return models.FetchBranchJob{}, fmt.Errorf("GetFetchBranchStatus %s: %w", jobID, err)
 	}
-	return fetchJobFromEntity(entity), nil
+	return gormstore.FetchBranchJobFromRow(row), nil
 }
 
 // runFetchBranch is the background goroutine started by [FetchBranch].
-// Steps:
-//  1. Transition job to "running".
-//  2. Retrieve bare_clone_path and source_url from the Repository entity.
-//  3. Open or re-clone the bare repository.
-//  4. Deepen the clone for this branch (unshallow).
-//  5. Walk full commit history; upsert Commit entities with seenSHAs dedup.
-//  6. Walk tip-commit tree; upsert Tree + Blob entities (metadata only, no content).
-//  7. Advance branch HEAD pointer.
-//  8. Transition Branch status to "fetched" (or "fetch_failed" on error).
-//  9. Transition job to "completed" (or "failed" on error).
-//  10. Publish [TopicBranchFetched].
 func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID, branchName string) {
 	runStart := time.Now()
 	log.Printf("[fetchbranch] job=%s branch=%q repoID=%s: starting", jobID, branchName, repoID)
@@ -187,57 +148,40 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 		return
 	}
 
-	t0 := time.Now()
-	repoEntity, err := m.dm.GetEntity(ctx, repoID)
-	if err != nil {
-		fail(fmt.Sprintf("get repo entity %s: %v", repoID, err))
+	var repoRow gormstore.RepositoryRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Where("id = ?", repoID).First(&repoRow).Error; err != nil {
+		fail(fmt.Sprintf("get repo row %s: %v", repoID, err))
 		return
 	}
-	log.Printf("[fetchbranch] job=%s branch=%q: GetEntity(repo) took %s", jobID, branchName, time.Since(t0))
-	sourceURL, _ := repoEntity.Properties["source_url"].(string)
-
+	sourceURL := repoRow.SourceURL
 	if sourceURL == "" {
-		branchEnt, berr := m.dm.GetEntity(ctx, branchID)
-		if berr == nil {
-			sourceURL, _ = branchEnt.Properties["source_url"].(string)
+		var branchRow gormstore.BranchRow
+		if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchID).First(&branchRow).Error; err == nil {
+			sourceURL = branchRow.SourceURL
 		}
 	}
-	log.Printf("[fetchbranch] job=%s branch=%q: source_url=%q", jobID, branchName, sourceURL)
 
 	// Perform a fresh full single-branch clone so we have the complete commit
 	// history without shallow-object problems.
-	t0 = time.Now()
-	log.Printf("[fetchbranch] job=%s branch=%q: starting deepenClone (full non-shallow single-branch)", jobID, branchName)
 	repo, newCloneDir, err := m.deepenClone(ctx, branchName, sourceURL)
-	log.Printf("[fetchbranch] job=%s branch=%q: deepenClone done in %s err=%v newCloneDir=%s", jobID, branchName, time.Since(t0), err, newCloneDir)
 	if err != nil {
 		fail(fmt.Sprintf("full clone branch=%q: %v", branchName, err))
 		return
 	}
 
-	// Persist the new bare_clone_path back onto the Repository entity so that
+	// Persist the new bare_clone_path back onto the Repository row so that
 	// loadBlobContentFromBareClone always opens the correct (fully-hydrated) clone.
-	if _, updateErr := m.dm.UpdateEntity(ctx, repoID, entitygraph.UpdateEntityRequest{
-		Properties: map[string]any{
-			"bare_clone_path": newCloneDir,
-			"updated_at":      time.Now().UTC().Format(time.RFC3339),
-		},
-	}); updateErr != nil {
-		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to update bare_clone_path to %s: %v", jobID, branchName, newCloneDir, updateErr)
-	} else {
-		log.Printf("[fetchbranch] job=%s branch=%q: updated bare_clone_path to %s", jobID, branchName, newCloneDir)
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Where("id = ?", repoID).
+		Updates(map[string]any{"bare_clone_path": newCloneDir, "updated_at": models.NowRFC3339()}).Error; err != nil {
+		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to update bare_clone_path to %s: %v", jobID, branchName, newCloneDir, err)
 	}
 
-	t0 = time.Now()
 	ref, err := findBranchRef(repo, branchName)
-	log.Printf("[fetchbranch] job=%s branch=%q: findBranchRef took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("find ref for branch=%q: %v", branchName, err))
 		return
 	}
 
-	t0 = time.Now()
-	log.Printf("[fetchbranch] job=%s branch=%q: starting walkCommitsOnly", jobID, branchName)
 	seenSHAs := make(map[string]bool)
 	if err := m.walkCommitsOnly(ctx, repo, ref, seenSHAs); err != nil {
 		if ctx.Err() != nil {
@@ -249,54 +193,34 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 		fail(fmt.Sprintf("walk commits branch=%q: %v", branchName, err))
 		return
 	}
-	log.Printf("[fetchbranch] job=%s branch=%q: walkCommitsOnly done in %s — %d commit(s)", jobID, branchName, time.Since(t0), len(seenSHAs))
 
-	t0 = time.Now()
 	tipCommit, err := repo.CommitObject(ref.Hash())
-	log.Printf("[fetchbranch] job=%s branch=%q: CommitObject took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("resolve tip commit branch=%q sha=%q: %v", branchName, ref.Hash().String(), err))
 		return
 	}
-	t0 = time.Now()
 	tipTree, err := tipCommit.Tree()
-	log.Printf("[fetchbranch] job=%s branch=%q: tipCommit.Tree() took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("resolve tip tree branch=%q: %v", branchName, err))
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	t0 = time.Now()
-	log.Printf("[fetchbranch] job=%s branch=%q: starting upsertTreeMetadataWithEdges", jobID, branchName)
+	now := models.NowRFC3339()
 	rootTreeID, err := m.upsertTreeMetadataWithEdges(ctx, repo, tipTree, "", now)
-	log.Printf("[fetchbranch] job=%s branch=%q: upsertTreeMetadataWithEdges done in %s err=%v rootTreeID=%s", jobID, branchName, time.Since(t0), err, rootTreeID)
 	if err != nil {
 		fail(fmt.Sprintf("walk tip tree branch=%q: %v", branchName, err))
 		return
 	}
 
 	tipSHA := ref.Hash().String()
-	t0 = time.Now()
-	headCommits, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID:     "Commit",
-		Properties: map[string]any{"sha": tipSHA},
-	})
-	log.Printf("[fetchbranch] job=%s branch=%q: ListEntities(Commit sha=%s) took %s found=%d", jobID, branchName, tipSHA[:8], time.Since(t0), len(headCommits))
-	if len(headCommits) > 0 {
-		commitID := headCommits[0].ID
-		// Wire commit → has_tree → root tree edge.
+	var headCommitRow gormstore.CommitRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("sha = ?", tipSHA).First(&headCommitRow).Error; err == nil {
 		if rootTreeID != "" {
-			_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				Name:   "has_tree",
-				FromID: commitID,
-				ToID:   rootTreeID,
-			})
+			_ = m.db.WithContext(ctx).Table(m.tables.Commits).Where("id = ?", headCommitRow.ID).
+				Update("tree_id", rootTreeID).Error
 		}
-		// Advance branch HEAD pointer.
-		_, _ = m.advanceBranchHead(ctx, branchID, commitID, "")
+		_, _ = m.advanceBranchHead(ctx, branchID, headCommitRow.ID, "")
 	}
 
-	// Mark branch fetched and job completed.
 	bg := context.Background()
 	if err := m.updateBranchFetchStatus(bg, branchID, branchStatusFetched, ""); err != nil {
 		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to mark branch fetched: %v", jobID, branchName, err)
@@ -310,8 +234,7 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 
 // deepenClone performs a fresh full (non-shallow) single-branch clone of
 // branchName from sourceURL into a new temp directory and returns the opened
-// repository. The caller should use this repo for all subsequent operations on
-// the branch.
+// repository.
 //
 // A fresh clone is used instead of deepening the existing shallow clone because
 // go-git v5 has no reliable Unshallow option: fetching into a shallow repo
@@ -333,15 +256,13 @@ func (m *gitManager) deepenClone(ctx context.Context, branchName, sourceURL stri
 		Tags:          gogit.NoTags,
 	})
 	if err != nil {
-		// Clean up temp dir on failure.
-		_ = os.RemoveAll(dir)
 		return nil, "", fmt.Errorf("deepenClone: clone branch %q: %w", branchName, err)
 	}
 	return repo, dir, nil
 }
 
-// walkCommitsOnly walks all commits reachable from ref and upserts Commit entities.
-// seenSHAs deduplicates across multiple FetchBranch calls.
+// walkCommitsOnly walks all commits reachable from ref and upserts Commit
+// rows in one batch. seenSHAs deduplicates across multiple FetchBranch calls.
 func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository, ref *gogitplumbing.Reference, seenSHAs map[string]bool) error {
 	iter, err := repo.Log(&gogit.LogOptions{
 		From:  ref.Hash(),
@@ -352,9 +273,9 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 	}
 	defer iter.Close()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	var commitCount int
-	return iter.ForEach(func(c *gogitobject.Commit) error {
+	now := models.NowRFC3339()
+	var rows []gormstore.CommitRow
+	if err := iter.ForEach(func(c *gogitobject.Commit) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -363,63 +284,43 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 			return nil
 		}
 		seenSHAs[sha] = true
-		commitCount++
-		t0 := time.Now()
-		_, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			TypeID: "Commit",
-			Properties: map[string]any{
-				"sha":             sha,
-				"message":         c.Message,
-				"author_name":     c.Author.Name,
-				"author_email":    c.Author.Email,
-				"author_at":       c.Author.When.UTC().Format(time.RFC3339),
-				"committer_name":  c.Committer.Name,
-				"committer_email": c.Committer.Email,
-				"committed_at":    c.Committer.When.UTC().Format(time.RFC3339),
-				"created_at":      now,
-			},
-		})
-		if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-			log.Printf("[fetchbranch] SLOW CreateEntity(Commit #%d sha=%s) took %s", commitCount, sha[:8], elapsed)
-		}
-		if createErr != nil && !errors.Is(createErr, entitygraph.ErrEntityAlreadyExists) {
-			return fmt.Errorf("create commit %s: %w", sha, createErr)
-		}
+		rows = append(rows, gormstore.CommitToRow(models.Commit{
+			SHA:            sha,
+			Message:        c.Message,
+			AuthorName:     c.Author.Name,
+			AuthorEmail:    c.Author.Email,
+			AuthorAt:       c.Author.When.UTC().Format(time.RFC3339),
+			CommitterName:  c.Committer.Name,
+			CommitterEmail: c.Committer.Email,
+			CommittedAt:    c.Committer.When.UTC().Format(time.RFC3339),
+			CreatedAt:      now,
+		}))
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	t0 := time.Now()
+	err = m.db.WithContext(ctx).Table(m.tables.Commits).CreateInBatches(&rows, 200).Error
+	if elapsed := time.Since(t0); elapsed > 500*time.Millisecond {
+		log.Printf("[fetchbranch] SLOW bulk-insert %d commits took %s", len(rows), elapsed)
+	}
+	return err
 }
 
-// upsertTreeMetadataWithEdges upserts Tree and Blob entities (metadata only, no content)
-// and creates has_blob / has_subtree edges so that allBlobsAtCommit can traverse them.
-// Returns the entity ID of the created/existing tree.
-// Recursive for subdirectories. ErrEntityAlreadyExists is skipped.
+// upsertTreeMetadataWithEdges creates a Tree row and its Blob children
+// (metadata only, no content) and wires tree_blobs/tree_subtrees rows so that
+// allBlobsAtCommit can traverse them. Returns the row ID of the created tree.
+// Recursive for subdirectories.
 func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogit.Repository, tree *gogitobject.Tree, pathPrefix, now string) (string, error) {
 	treeSHA := tree.Hash.String()
-	log.Printf("[upsertTree] path=%q sha=%s entries=%d", pathPrefix, treeSHA[:8], len(tree.Entries))
-
-	treeEntity, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Tree",
-		Properties: map[string]any{
-			"sha":        treeSHA,
-			"path":       pathPrefix,
-			"created_at": now,
-		},
-	})
-	var treeID string
-	if createErr != nil && !errors.Is(createErr, entitygraph.ErrEntityAlreadyExists) {
-		return "", fmt.Errorf("create tree %s path=%q: %w", treeSHA, pathPrefix, createErr)
+	treeRow := gormstore.TreeToRow(models.Tree{SHA: treeSHA, Path: pathPrefix, CreatedAt: now})
+	if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
+		return "", fmt.Errorf("create tree %s path=%q: %w", treeSHA, pathPrefix, err)
 	}
-	if createErr == nil {
-		treeID = treeEntity.ID
-	} else {
-		existing, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			TypeID:     "Tree",
-			Properties: map[string]any{"sha": treeSHA},
-		})
-		if listErr == nil && len(existing) > 0 {
-			treeID = existing[0].ID
-		}
-	}
+	treeID := treeRow.ID
 
 	for _, entry := range tree.Entries {
 		if ctx.Err() != nil {
@@ -436,12 +337,12 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			if err != nil {
 				return treeID, err
 			}
-			if treeID != "" && blobID != "" {
-				_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-					Name:   "has_blob",
-					FromID: treeID,
-					ToID:   blobID,
-				})
+			if blobID != "" {
+				if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
+					Clauses(clause.OnConflict{DoNothing: true}).
+					Create(&gormstore.TreeBlobRow{TreeID: treeID, BlobID: blobID}).Error; err != nil {
+					log.Printf("[upsertTree] link tree_blobs path=%q: %v (non-fatal)", entryPath, err)
+				}
 			}
 		} else {
 			subTree, err := repo.TreeObject(entry.Hash)
@@ -455,22 +356,21 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			if err != nil {
 				return treeID, err
 			}
-			if treeID != "" && subTreeID != "" {
-				_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-					Name:   "has_subtree",
-					FromID: treeID,
-					ToID:   subTreeID,
-				})
+			if subTreeID != "" {
+				if err := m.db.WithContext(ctx).Table(m.tables.TreeSubtrees).
+					Clauses(clause.OnConflict{DoNothing: true}).
+					Create(&gormstore.TreeSubtreeRow{TreeID: treeID, SubtreeID: subTreeID}).Error; err != nil {
+					log.Printf("[upsertTree] link tree_subtrees path=%q: %v (non-fatal)", entryPath, err)
+				}
 			}
 		}
 	}
 	return treeID, nil
 }
 
-// upsertBlobMetadataWithID creates a Blob entity with sha, path, name, extension,
-// and size — content is omitted for lazy population by ReadFile (GIT-023e).
-// Returns the entity ID of the created/existing blob.
-// ErrEntityAlreadyExists is skipped.
+// upsertBlobMetadataWithID creates a Blob row with sha, path, name,
+// extension, and size — content is omitted for lazy population by ReadFile
+// (GIT-023e). Returns the row ID of the created blob.
 func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.Repository, entry gogitobject.TreeEntry, fullPath, now string) (string, error) {
 	blobSHA := entry.Hash.String()
 
@@ -478,101 +378,48 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 	// (i.e. objects that were pushed, not import-job metadata-only entities).
 	// For metadata-only blobs we use size 0 — it will be backfilled lazily.
 	var blobSize int64
-	t0 := time.Now()
 	if err := repo.Storer.HasEncodedObject(entry.Hash); err == nil {
-		blobObj, blobErr := repo.BlobObject(entry.Hash)
-		if blobErr == nil {
+		if blobObj, blobErr := repo.BlobObject(entry.Hash); blobErr == nil {
 			blobSize = blobObj.Size
 		}
-	}
-	if elapsed := time.Since(t0); elapsed > 100*time.Millisecond {
-		log.Printf("[fetchbranch] SLOW BlobObject(%s path=%q) took %s", blobSHA[:8], fullPath, elapsed)
 	}
 
 	ext := strings.TrimPrefix(filepath.Ext(entry.Name), ".")
 	name := filepath.Base(fullPath)
 
-	t0 = time.Now()
-	blobEntity, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Blob",
-		Properties: map[string]any{
-			"sha":        blobSHA,
-			"path":       fullPath,
-			"name":       name,
-			"extension":  ext,
-			"size":       blobSize,
-			"encoding":   "",
-			"content":    "",
-			"created_at": now,
-		},
+	row := gormstore.BlobToRow(models.Blob{
+		SHA:       blobSHA,
+		Path:      fullPath,
+		Name:      name,
+		Extension: ext,
+		Size:      blobSize,
+		CreatedAt: now,
 	})
-	if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-		log.Printf("[fetchbranch] SLOW CreateEntity(Blob sha=%s path=%q) took %s", blobSHA[:8], fullPath, elapsed)
+	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&row).Error; err != nil {
+		return "", fmt.Errorf("create blob metadata %s path=%q: %w", blobSHA, fullPath, err)
 	}
-	var blobID string
-	if createErr != nil && !errors.Is(createErr, entitygraph.ErrEntityAlreadyExists) {
-		return "", fmt.Errorf("create blob metadata %s path=%q: %w", blobSHA, fullPath, createErr)
-	}
-	if createErr == nil {
-		blobID = blobEntity.ID
-	} else {
-		t0 = time.Now()
-		existing, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			TypeID:     "Blob",
-			Properties: map[string]any{"sha": blobSHA},
-		})
-		if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-			log.Printf("[fetchbranch] SLOW ListEntities(Blob sha=%s) took %s", blobSHA[:8], elapsed)
-		}
-		if listErr == nil && len(existing) > 0 {
-			blobID = existing[0].ID
-		}
-	}
-	return blobID, nil
+	return row.ID, nil
 }
 
-// updateFetchJobStatus transitions a FetchBranchJob entity to the given status.
+// updateFetchJobStatus transitions a FetchBranchJob row to the given status.
 func (m *gitManager) updateFetchJobStatus(ctx context.Context, jobID, status, errMsg string) error {
-	_, err := m.dm.UpdateEntity(ctx, jobID, entitygraph.UpdateEntityRequest{
-		Properties: map[string]any{
-			"status":        status,
-			"error_message": errMsg,
-			"updated_at":    time.Now().UTC().Format(time.RFC3339),
-		},
-	})
-	return err
+	return m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Where("id = ?", jobID).Updates(map[string]any{
+		"status":        status,
+		"error_message": errMsg,
+		"updated_at":    models.NowRFC3339(),
+	}).Error
 }
 
-// updateBranchFetchStatus patches the Branch entity status and optional error_message.
+// updateBranchFetchStatus patches the Branch row status and optional error_message.
 func (m *gitManager) updateBranchFetchStatus(ctx context.Context, branchID, status, errMsg string) error {
-	props := map[string]any{
+	updates := map[string]any{
 		"status":     status,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"updated_at": models.NowRFC3339(),
 	}
 	if errMsg != "" {
-		props["error_message"] = errMsg
+		updates["error_message"] = errMsg
 	}
-	_, err := m.dm.UpdateEntity(ctx, branchID, entitygraph.UpdateEntityRequest{
-		Properties: props,
-	})
-	return err
-}
-
-// fetchJobFromEntity converts an [entitygraph.Entity] to a [FetchBranchJob] value.
-func fetchJobFromEntity(e entitygraph.Entity) FetchBranchJob {
-	str := func(key string) string {
-		v, _ := e.Properties[key].(string)
-		return v
-	}
-	return FetchBranchJob{
-		ID:           e.ID,
-		RepoID:       str("repo_id"),
-		BranchName:   str("branch_name"),
-		Status:       str("status"),
-		ErrorMessage: str("error_message"),
-		CreatedAt:    str("created_at"),
-		UpdatedAt:    str("updated_at"),
-	}
+	return m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchID).Updates(updates).Error
 }
 
 // findBranchRef resolves a branch name to a reference in the local clone.

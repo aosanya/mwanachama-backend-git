@@ -1,307 +1,11 @@
-// Package mwanachamagit provides Git-like versioned content for
-// mwanachama-frontend-kazi: repositories, branches, commits, trees, blobs, merge
-// requests, tags, and a keyword-tagging documentation layer, modeled as
-// entities and edges in a [github.com/aosanya/mwanachama-backend-shared/entitygraph]
-// entity graph. Value types used by [GitManager] and its callers are defined
-// here.
-//
-// Ported from github.com/aosanya/CodeValdGit's v2 (entitygraph-native)
-// domain model. Each struct mirrors a TypeDefinition declared in
-// DefaultGitSchema (see schema.go) and is used as the Go representation when
-// reading entities from the entity graph's DataManager.
+// models.go holds the request/filter/graph DTOs used as [GitManager] method
+// arguments and return shapes. These are not persisted entities — the
+// persisted domain types (Repository, Branch, Commit, Tree, Blob, Keyword,
+// etc.) live in mwanachama-backend-git/models, alongside their GORM row
+// counterparts in gormstore/. See doc.go for the full package layout.
 package mwanachamagit
 
-// Agency is the root entity for an agency in mwanachama-backend-git.
-// Each agency may own one or more [Repository] entities linked via
-// has_repository edges in the entity graph.
-type Agency struct {
-	// ID is the unique entitygraph identifier for this agency.
-	ID string `json:"id"`
-
-	// Name is the human-readable agency label.
-	Name string `json:"name"`
-
-	// Description is an optional free-text description of the agency.
-	Description string `json:"description,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the agency was created.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp when the agency was last modified.
-	UpdatedAt string `json:"updated_at"`
-}
-
-// Repository is a versioned codebase owned by an [Agency].
-// An agency can have multiple repositories; each is linked to its owning
-// agency via a belongs_to_agency edge. Sub-resources (Branches, Tags,
-// Commits) are separate entities linked via edges in the entity graph.
-type Repository struct {
-	// ID is the unique entitygraph identifier for this repository.
-	ID string `json:"id"`
-
-	// Name is the human-readable label used as the repo key.
-	Name string `json:"name"`
-
-	// Description is an optional free-text description of the repository.
-	Description string `json:"description,omitempty"`
-
-	// DefaultBranch is the name of the primary branch (e.g. "main").
-	DefaultBranch string `json:"default_branch"`
-
-	// CreatedAt is the ISO 8601 timestamp when the repository was created.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp when the repository was last modified.
-	UpdatedAt string `json:"updated_at"`
-
-	// SourceURL is the remote Git URL the repository was imported from.
-	// Empty for repositories created locally via InitRepo.
-	SourceURL string `json:"source_url,omitempty"`
-}
-
-// Branch is a named ref pointing to a [Commit]. The target commit is linked
-// via a points_to edge and is updated atomically on each push or merge.
-// Branches are mutable; the task-branch workflow creates one Branch per task
-// and deletes it after the task branch is merged.
-type Branch struct {
-	// ID is the unique entitygraph identifier for this branch.
-	ID string `json:"id"`
-
-	// RepositoryID is resolved from the belongs_to_repository edge.
-	RepositoryID string `json:"repository_id"`
-
-	// Name is the full ref name, e.g. "main" or "task/abc-001".
-	Name string `json:"name"`
-
-	// IsDefault is true for the repository's default branch (e.g. main).
-	IsDefault bool `json:"is_default,omitempty"`
-
-	// HeadCommitID is the entitygraph ID of the current HEAD Commit, resolved
-	// from the points_to edge.
-	HeadCommitID string `json:"head_commit_id,omitempty"`
-
-	// SHA is the git commit hash at the branch tip, stored directly on the
-	// entity so IterReferences can advertise the ref without an extra lookup.
-	SHA string `json:"sha,omitempty"`
-
-	// WorkflowRunID links this branch to its originating WorkflowRun
-	// (FEAT-20260602-001). Empty for branches created outside any orchestrated
-	// run — e.g. the default branch created by InitRepo or imports.
-	WorkflowRunID string `json:"workflow_run_id,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the branch was created.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp when the branch ref was last updated.
-	UpdatedAt string `json:"updated_at"`
-}
-
-// MergeRequest captures a request to merge a source branch into a target
-// branch. Status transitions: "open" → "merged" | "closed" | "failed".
-// WorkflowRunID links the MR back to its originating WorkflowRun
-// (FEAT-20260602-001) so rollback and the closure view can enumerate every
-// MR a single run produced.
-type MergeRequest struct {
-	// ID is the unique entitygraph identifier for this merge request.
-	ID string `json:"id"`
-
-	// RepositoryID is the entitygraph ID of the owning Repository.
-	RepositoryID string `json:"repository_id"`
-
-	// Title is the human-readable summary of the change. Required at create time.
-	Title string `json:"title"`
-
-	// Description is an optional longer-form explanation.
-	Description string `json:"description,omitempty"`
-
-	// SourceBranchID is the entitygraph ID of the branch whose commits are
-	// being requested for merge.
-	SourceBranchID string `json:"source_branch_id"`
-
-	// SourceBranchName is the human-readable label of the source branch.
-	SourceBranchName string `json:"source_branch_name,omitempty"`
-
-	// TargetBranchID is the entitygraph ID of the branch the source will be
-	// merged into. Empty defaults to the repository's default branch.
-	TargetBranchID string `json:"target_branch_id,omitempty"`
-
-	// TargetBranchName is the human-readable label of the target branch.
-	TargetBranchName string `json:"target_branch_name,omitempty"`
-
-	// Status is one of: "open", "merged", "closed", "failed".
-	Status string `json:"status"`
-
-	// MergedCommitSHA is populated when Status transitions to "merged" and
-	// holds the SHA of the resulting target-branch HEAD commit.
-	MergedCommitSHA string `json:"merged_commit_sha,omitempty"`
-
-	// AuthorName is the agent or user who opened the MR. Optional.
-	AuthorName string `json:"author_name,omitempty"`
-
-	// ErrorMessage is populated only when Status == "failed".
-	ErrorMessage string `json:"error_message,omitempty"`
-
-	// WorkflowRunID links this MR to its originating WorkflowRun
-	// (FEAT-20260602-001). Empty for manually opened MRs.
-	WorkflowRunID string `json:"workflow_run_id,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the MR was opened.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp of the last status transition.
-	UpdatedAt string `json:"updated_at"`
-}
-
-// MergeRequestStatus values for [MergeRequest.Status].
-const (
-	MergeRequestStatusOpen       = "open"
-	MergeRequestStatusMerged     = "merged"
-	MergeRequestStatusClosed     = "closed"
-	MergeRequestStatusFailed     = "failed"
-	MergeRequestStatusRolledBack = "rolled_back"
-)
-
-// Tag is an immutable named ref pointing to a [Commit]. Once created, the
-// target commit must never change. Lightweight tags record only a name and
-// SHA; annotated tags also carry a message and tagger metadata.
-type Tag struct {
-	// ID is the unique entitygraph identifier for this tag.
-	ID string `json:"id"`
-
-	// RepositoryID is resolved from the belongs_to_repository edge.
-	RepositoryID string `json:"repository_id"`
-
-	// Name is the human-readable tag label, e.g. "v1.0.0".
-	Name string `json:"name"`
-
-	// SHA is the commit SHA this tag resolves to.
-	SHA string `json:"sha"`
-
-	// Message is the annotation message for annotated tags; empty for lightweight tags.
-	Message string `json:"message,omitempty"`
-
-	// TaggerName is the name of the person or agent who created the tag.
-	TaggerName string `json:"tagger_name,omitempty"`
-
-	// TaggerAt is the ISO 8601 timestamp at which the tag was created.
-	TaggerAt string `json:"tagger_at,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the tag was persisted.
-	CreatedAt string `json:"created_at"`
-}
-
-// Commit is an immutable git commit entity. It is content-addressed by
-// [Commit.SHA] and never mutated after creation. The root [Tree] is linked
-// via a has_tree edge; parent commits are linked via has_parent edges (0 for
-// the initial commit, 1 for a normal commit, 2+ for merge commits).
-type Commit struct {
-	// ID is the unique entitygraph identifier for this commit entity.
-	ID string `json:"id"`
-
-	// RepositoryID is resolved from the belongs_to_repository edge.
-	RepositoryID string `json:"repository_id"`
-
-	// SHA is the full 40-character hex Git commit hash.
-	SHA string `json:"sha"`
-
-	// Message is the commit message as stored in Git.
-	Message string `json:"message"`
-
-	// AuthorName is the name or agent ID of the commit author.
-	AuthorName string `json:"author_name,omitempty"`
-
-	// AuthorEmail is the author email address recorded in the Git commit.
-	AuthorEmail string `json:"author_email,omitempty"`
-
-	// AuthorAt is the ISO 8601 author timestamp.
-	AuthorAt string `json:"author_at,omitempty"`
-
-	// CommitterName is the name of the person or service that committed the tree.
-	CommitterName string `json:"committer_name,omitempty"`
-
-	// CommitterEmail is the committer email address.
-	CommitterEmail string `json:"committer_email,omitempty"`
-
-	// CommittedAt is the ISO 8601 committer timestamp.
-	CommittedAt string `json:"committed_at,omitempty"`
-
-	// TreeID is the entitygraph ID of the root Tree, resolved from the has_tree edge.
-	TreeID string `json:"tree_id,omitempty"`
-
-	// ParentIDs are the entitygraph IDs of parent Commits, resolved from has_parent edges.
-	ParentIDs []string `json:"parent_ids,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the commit entity was persisted.
-	CreatedAt string `json:"created_at"`
-}
-
-// Tree is an immutable git tree entity. A tree represents a directory
-// listing at a specific point in time. The root tree of a commit is linked
-// via a has_tree edge on the [Commit]; nested subdirectory trees are linked
-// via has_subtree edges on the parent tree.
-type Tree struct {
-	// ID is the unique entitygraph identifier for this tree entity.
-	ID string `json:"id"`
-
-	// SHA is the full 40-character hex Git tree hash.
-	SHA string `json:"sha"`
-
-	// Path is the directory path within the commit tree hierarchy.
-	// An empty string ("") denotes the root tree of a commit.
-	Path string `json:"path,omitempty"`
-
-	// CommitID is the entitygraph ID of the owning Commit, resolved from the
-	// belongs_to_commit edge. Only set when this tree is the root (Path == "").
-	CommitID string `json:"commit_id,omitempty"`
-
-	// BlobIDs are the entitygraph IDs of direct [Blob] children, resolved from has_blob edges.
-	BlobIDs []string `json:"blob_ids,omitempty"`
-
-	// SubtreeIDs are the entitygraph IDs of nested [Tree] children, resolved from has_subtree edges.
-	SubtreeIDs []string `json:"subtree_ids,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the tree entity was persisted.
-	CreatedAt string `json:"created_at"`
-}
-
-// Blob is an immutable git blob entity. Blobs are content-addressed by
-// [Blob.SHA] and represent individual file contents. Text file content is
-// stored as-is; binary file content is base64-encoded and [Blob.Encoding] is
-// set to "base64".
-type Blob struct {
-	// ID is the unique entitygraph identifier for this blob entity.
-	ID string `json:"id"`
-
-	// SHA is the full 40-character hex Git blob hash.
-	SHA string `json:"sha"`
-
-	// Path is the file path relative to the repository root,
-	// e.g. "src/handlers/server.go".
-	Path string `json:"path"`
-
-	// Name is the base file name including extension, e.g. "Test.txt".
-	Name string `json:"name,omitempty"`
-
-	// Extension is the file extension without the leading dot, e.g. "txt".
-	// Empty for files with no extension or dotfiles.
-	Extension string `json:"extension,omitempty"`
-
-	// Size is the byte size of the file content.
-	Size int64 `json:"size,omitempty"`
-
-	// Encoding is "utf-8" for text files or "base64" for binary files.
-	Encoding string `json:"encoding,omitempty"`
-
-	// Content holds the raw file content. Base64-encoded when Encoding == "base64".
-	Content string `json:"content,omitempty"`
-
-	// TreeID is the entitygraph ID of the owning [Tree], resolved from the
-	// belongs_to_tree edge.
-	TreeID string `json:"tree_id,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the blob entity was persisted.
-	CreatedAt string `json:"created_at"`
-}
+import "github.com/aosanya/mwanachama-backend-git/models"
 
 // ── Request / filter types ────────────────────────────────────────────────────
 //
@@ -325,14 +29,14 @@ type CreateRepoRequest struct {
 
 // CreateBranchRequest carries the parameters for [GitManager.CreateBranch].
 type CreateBranchRequest struct {
-	// RepositoryID is the entitygraph ID of the [Repository] that will own this
+	// RepositoryID is the ID of the [models.Repository] that will own this
 	// branch. Required.
 	RepositoryID string `json:"repository_id"`
 
 	// Name is the full branch name (e.g. "task/abc-001"). Required.
 	Name string `json:"name"`
 
-	// FromBranchID is the entitygraph ID of the source branch from which the
+	// FromBranchID is the ID of the source branch from which the
 	// new branch is created. When empty, the repository's default branch is used.
 	FromBranchID string `json:"from_branch_id,omitempty"`
 
@@ -343,7 +47,7 @@ type CreateBranchRequest struct {
 
 // CreateMergeRequestRequest carries the parameters for [GitManager.CreateMergeRequest].
 type CreateMergeRequestRequest struct {
-	// RepositoryID is the entitygraph ID of the owning Repository. Required.
+	// RepositoryID is the ID of the owning Repository. Required.
 	RepositoryID string `json:"repository_id"`
 
 	// Title is the human-readable summary of the change. Required.
@@ -352,10 +56,10 @@ type CreateMergeRequestRequest struct {
 	// Description is an optional longer-form explanation.
 	Description string `json:"description,omitempty"`
 
-	// SourceBranchID is the entitygraph ID of the source branch. Required.
+	// SourceBranchID is the ID of the source branch. Required.
 	SourceBranchID string `json:"source_branch_id"`
 
-	// TargetBranchID is the entitygraph ID of the target branch. When empty
+	// TargetBranchID is the ID of the target branch. When empty
 	// the repository's default branch is used.
 	TargetBranchID string `json:"target_branch_id,omitempty"`
 
@@ -419,14 +123,14 @@ type RollbackResult struct {
 
 // CreateTagRequest carries the parameters for [GitManager.CreateTag].
 type CreateTagRequest struct {
-	// RepositoryID is the entitygraph ID of the [Repository] that will own this
+	// RepositoryID is the ID of the [models.Repository] that will own this
 	// tag. Required.
 	RepositoryID string `json:"repository_id"`
 
 	// Name is the human-readable tag label (e.g. "v1.0.0"). Required.
 	Name string `json:"name"`
 
-	// CommitID is the entitygraph ID of the [Commit] this tag points to. Required.
+	// CommitID is the ID of the [models.Commit] this tag points to. Required.
 	CommitID string `json:"commit_id"`
 
 	// Message is the annotation message for annotated tags. Empty for
@@ -439,7 +143,7 @@ type CreateTagRequest struct {
 
 // WriteFileRequest carries the parameters for [GitManager.WriteFile].
 type WriteFileRequest struct {
-	// BranchID is the entitygraph ID of the target [Branch]. Required.
+	// BranchID is the ID of the target [models.Branch]. Required.
 	BranchID string `json:"branch_id"`
 
 	// Path is the file path relative to the repository root (e.g.
@@ -465,7 +169,7 @@ type WriteFileRequest struct {
 
 // DeleteFileRequest carries the parameters for [GitManager.DeleteFile].
 type DeleteFileRequest struct {
-	// BranchID is the entitygraph ID of the target [Branch]. Required.
+	// BranchID is the ID of the target [models.Branch]. Required.
 	BranchID string `json:"branch_id"`
 
 	// Path is the file path relative to the repository root. Required.
@@ -494,36 +198,6 @@ type LogFilter struct {
 
 // ── Documentation layer types (GIT-019) ──────────────────────────────────────
 
-// Keyword is a hierarchical discovery label used to tag Blobs, Branches, and
-// Commits. Keywords form a free-form taxonomy tree via has_child edges.
-// Querying a parent Keyword cascades to all descendant Keywords by default.
-type Keyword struct {
-	// ID is the unique entitygraph identifier for this keyword entity.
-	ID string `json:"id"`
-
-	// Name is the human-readable label, e.g. "authentication" or "grpc".
-	Name string `json:"name"`
-
-	// Description is an optional plain-text summary of the keyword.
-	Description string `json:"description,omitempty"`
-
-	// Scope is an optional grouping label (e.g. "domain", "layer", "technology").
-	Scope string `json:"scope,omitempty"`
-
-	// ParentID is the entitygraph ID of the parent Keyword, or empty if this is
-	// a root keyword.
-	ParentID string `json:"parent_id,omitempty"`
-
-	// ChildIDs are the entitygraph IDs of direct child Keywords.
-	ChildIDs []string `json:"child_ids,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp when the keyword was created.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp when the keyword was last modified.
-	UpdatedAt string `json:"updated_at"`
-}
-
 // CreateKeywordRequest carries the parameters for [GitManager.CreateKeyword].
 type CreateKeywordRequest struct {
 	// Name is the human-readable keyword label. Required.
@@ -535,7 +209,7 @@ type CreateKeywordRequest struct {
 	// Scope is an optional grouping label.
 	Scope string `json:"scope,omitempty"`
 
-	// ParentID is the entitygraph ID of the parent Keyword. Empty for a root keyword.
+	// ParentID is the ID of the parent Keyword. Empty for a root keyword.
 	ParentID string `json:"parent_id,omitempty"`
 }
 
@@ -568,7 +242,7 @@ type KeywordFilter struct {
 // by [GitManager.GetKeywordTree].
 type KeywordTreeNode struct {
 	// Keyword is the keyword entity for this node.
-	Keyword Keyword `json:"keyword"`
+	Keyword models.Keyword `json:"keyword"`
 
 	// Children are the direct child nodes in the taxonomy tree.
 	Children []KeywordTreeNode `json:"children,omitempty"`
@@ -578,11 +252,11 @@ type KeywordTreeNode struct {
 // Edges created via this method are branch-scoped and follow the DR-010
 // lifecycle (replicated to main on merge, deleted on branch delete).
 type CreateEdgeRequest struct {
-	// BranchID is the entitygraph ID of the branch that scopes this edge.
+	// BranchID is the ID of the branch that scopes this edge.
 	// The from entity must be a Blob that exists on this branch. Required.
 	BranchID string `json:"branch_id"`
 
-	// FromEntityID is the entitygraph ID of the source entity. Required.
+	// FromEntityID is the ID of the source entity. Required.
 	// Must be a Blob that belongs to the specified branch.
 	FromEntityID string `json:"from_entity_id"`
 
@@ -591,7 +265,7 @@ type CreateEdgeRequest struct {
 	// "imported_by". Required.
 	RelationshipName string `json:"relationship_name"`
 
-	// ToEntityID is the entitygraph ID of the target entity. Required.
+	// ToEntityID is the ID of the target entity. Required.
 	// For "tagged_with": must be a Keyword.
 	// For "references": must be a Blob; requires a "descriptor" property.
 	// For other types: must be a Blob.
@@ -605,17 +279,17 @@ type CreateEdgeRequest struct {
 
 // DeleteEdgeRequest carries the parameters for [GitManager.DeleteEdge].
 type DeleteEdgeRequest struct {
-	// BranchID is the entitygraph ID of the branch that scopes this edge.
+	// BranchID is the ID of the branch that scopes this edge.
 	// Required.
 	BranchID string `json:"branch_id"`
 
-	// FromEntityID is the entitygraph ID of the source entity. Required.
+	// FromEntityID is the ID of the source entity. Required.
 	FromEntityID string `json:"from_entity_id"`
 
 	// RelationshipName is the edge type to delete. Required.
 	RelationshipName string `json:"relationship_name"`
 
-	// ToEntityID is the entitygraph ID of the target entity. Required.
+	// ToEntityID is the ID of the target entity. Required.
 	ToEntityID string `json:"to_entity_id"`
 }
 
@@ -625,10 +299,10 @@ type DeleteEdgeRequest struct {
 // [GitManager.SearchByKeywords]. It carries the entity ID, type, and a
 // snapshot of its properties at query time.
 type GraphNode struct {
-	// ID is the unique entitygraph identifier for this entity.
+	// ID is the unique identifier for this entity.
 	ID string `json:"id"`
 
-	// TypeID is the entity's TypeDefinition name (e.g. "Blob", "Keyword").
+	// TypeID is the entity's type name (e.g. "Blob", "Keyword").
 	TypeID string `json:"type_id"`
 
 	// Properties holds the current state values of the entity.
@@ -636,19 +310,20 @@ type GraphNode struct {
 }
 
 // GraphEdge is a directed edge returned in a graph query result.
-// It mirrors entitygraph.Relationship but uses only the fields needed by
-// the frontend graph explorer.
 type GraphEdge struct {
-	// ID is the unique entitygraph identifier for this relationship.
+	// ID is a synthetic identifier for this edge ("<name>:<fromID>:<toID>")
+	// — not a real storage key. FK- and join-derived edges have no row ID of
+	// their own; this value exists only to dedupe edges during traversal and
+	// must not be treated as a fetchable reference.
 	ID string `json:"id"`
 
 	// Name is the relationship type label (e.g. "tagged_with", "documents").
 	Name string `json:"name"`
 
-	// FromID is the entitygraph ID of the source vertex.
+	// FromID is the ID of the source vertex.
 	FromID string `json:"from_id"`
 
-	// ToID is the entitygraph ID of the target vertex.
+	// ToID is the ID of the target vertex.
 	ToID string `json:"to_id"`
 }
 
@@ -680,7 +355,7 @@ const (
 
 // SearchByKeywordsRequest carries the parameters for [GitManager.SearchByKeywords].
 type SearchByKeywordsRequest struct {
-	// BranchID is the entitygraph ID of the branch to search within.
+	// BranchID is the ID of the branch to search within.
 	// Only entities reachable from this branch are considered.
 	BranchID string `json:"branch_id"`
 
@@ -701,7 +376,7 @@ type SearchByKeywordsRequest struct {
 // QueryGraphRequest carries the parameters for [GitManager.QueryGraph].
 // All filter fields are optional; omitting a field disables that filter dimension.
 type QueryGraphRequest struct {
-	// BranchID is the entitygraph ID of the branch scope.
+	// BranchID is the ID of the branch scope.
 	BranchID string `json:"branch_id"`
 
 	// Limit is the maximum number of nodes to return. Defaults to 50.
@@ -737,10 +412,10 @@ type QueryGraphRequest struct {
 // It targets a single stub branch (status == "stub") within a repository and
 // triggers an async on-demand fetch of its full commit history and file tree.
 type FetchBranchRequest struct {
-	// RepoID is the entitygraph ID of the Repository that owns the branch.
+	// RepoID is the ID of the Repository that owns the branch.
 	RepoID string `json:"repo_id"`
 
-	// BranchID is the entitygraph ID of the Branch to fetch.
+	// BranchID is the ID of the Branch to fetch.
 	// The branch must currently have status == "stub".
 	BranchID string `json:"branch_id"`
 }
@@ -760,7 +435,7 @@ type SearchBlobsRequest struct {
 
 // BlobSearchResult is a single ranked match returned by [GitManager.SearchBlobs].
 type BlobSearchResult struct {
-	// ID is the entitygraph identifier of the matching Blob.
+	// ID is the identifier of the matching Blob.
 	ID string `json:"id"`
 	// Path is the file path relative to the repository root.
 	Path string `json:"path"`
@@ -773,32 +448,4 @@ type BlobSearchResult struct {
 	Snippet string `json:"snippet,omitempty"`
 	// Score is the search relevance score (higher = more relevant).
 	Score float64 `json:"score"`
-}
-
-// FetchBranchJob represents the state of an async on-demand branch fetch
-// operation triggered by [GitManager.FetchBranch].
-//
-// Status transitions: "pending" → "running" → "completed" | "failed".
-// Call [GitManager.GetFetchBranchStatus] to poll for progress.
-type FetchBranchJob struct {
-	// ID is the stable job identifier returned by [GitManager.FetchBranch].
-	ID string `json:"id"`
-
-	// RepoID is the entitygraph ID of the Repository being fetched.
-	RepoID string `json:"repo_id"`
-
-	// BranchName is the short name of the branch being fetched (e.g. "main").
-	BranchName string `json:"branch_name"`
-
-	// Status is one of: "pending", "running", "completed", "failed".
-	Status string `json:"status"`
-
-	// ErrorMessage is populated when Status == "failed".
-	ErrorMessage string `json:"error_message,omitempty"`
-
-	// CreatedAt is the ISO 8601 timestamp at which FetchBranch was called.
-	CreatedAt string `json:"created_at"`
-
-	// UpdatedAt is the ISO 8601 timestamp of the last status transition.
-	UpdatedAt string `json:"updated_at"`
 }

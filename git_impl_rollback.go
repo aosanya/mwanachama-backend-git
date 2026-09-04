@@ -10,22 +10,19 @@
 //     run has no operational meaning.
 //   - MergeRequests are mutated, not deleted, so the audit trail of "this run
 //     merged X into main" survives the rollback. merged_commit_sha is
-//     preserved on the entity for the same reason.
+//     preserved on the row for the same reason.
 //
 // Note: the underlying commit chain on the default branch is left intact —
-// commits in this service are content-addressed and immutable. A future
-// follow-up may add a true compensating-commit pass once the squash-merge
-// rework lands (see GIT-012 / GIT-013); the present leg is sufficient for the
-// "wipe transient task branches" guarantee the coordinator depends on.
+// commits in this service are content-addressed and immutable.
 package mwanachamagit
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // RollbackByWorkflowRun implements [GitManager].
@@ -44,8 +41,6 @@ func (m *gitManager) RollbackByWorkflowRun(ctx context.Context, workflowRunID st
 
 	deleted, skipped, brErr := m.deleteBranchesForRun(ctx, workflowRunID)
 	if brErr != nil {
-		// MR rollback already succeeded; surface the branch failure but echo
-		// the partial counts so the coordinator can log them.
 		result.BranchesDeleted = deleted
 		result.DefaultBranchesSkipped = skipped
 		return result, fmt.Errorf("RollbackByWorkflowRun: branches: %w", brErr)
@@ -72,16 +67,15 @@ func (m *gitManager) rollbackMergeRequestsForRun(ctx context.Context, workflowRu
 	}
 	count := 0
 	for _, mr := range mrs {
-		if mr.Status == MergeRequestStatusRolledBack {
+		if mr.Status == models.MergeRequestStatusRolledBack {
 			continue
 		}
 		priorStatus := mr.Status
-		if _, err := m.dm.UpdateEntity(ctx, mr.ID, entitygraph.UpdateEntityRequest{
-			Properties: map[string]any{
-				"status":     MergeRequestStatusRolledBack,
-				"updated_at": time.Now().UTC().Format(time.RFC3339),
-			},
-		}); err != nil {
+		if err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).
+			Where("id = ?", mr.ID).Updates(map[string]any{
+			"status":     models.MergeRequestStatusRolledBack,
+			"updated_at": models.NowRFC3339(),
+		}).Error; err != nil {
 			return count, fmt.Errorf("mark MR %s rolled_back: %w", mr.ID, err)
 		}
 		m.publish(ctx, TopicMergeRolledBack, MergeRequestRolledBackPayload{
@@ -97,32 +91,28 @@ func (m *gitManager) rollbackMergeRequestsForRun(ctx context.Context, workflowRu
 	return count, nil
 }
 
-// deleteBranchesForRun hard-deletes every non-default Branch carrying
-// workflowRunID. The default branch is never deleted — even when tagged with
-// the run — because losing the repository's primary ref would break every
-// future operation against the repo. The skipped counter is surfaced so
-// callers can log and investigate the (always unexpected) condition.
+// deleteBranchesForRun hard-deletes (in this soft-delete schema, marks
+// deleted) every non-default Branch carrying workflowRunID. The default
+// branch is never deleted — even when tagged with the run — because losing
+// the repository's primary ref would break every future operation against
+// the repo. The skipped counter is surfaced so callers can log and
+// investigate the (always unexpected) condition.
 func (m *gitManager) deleteBranchesForRun(ctx context.Context, workflowRunID string) (deleted, skippedDefault int, err error) {
-	entities, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Branch",
-	})
-	if listErr != nil {
-		return 0, 0, fmt.Errorf("list branches: %w", listErr)
+	var rows []gormstore.BranchRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("workflow_run_id = ? AND NOT deleted", workflowRunID).Find(&rows).Error; err != nil {
+		return 0, 0, fmt.Errorf("list branches: %w", err)
 	}
-	for _, e := range entities {
-		if entitygraph.StringProp(e.Properties, "workflow_run_id") != workflowRunID {
-			continue
-		}
-		if entitygraph.BoolProp(e.Properties, "is_default") {
+	for _, row := range rows {
+		if row.IsDefault {
 			skippedDefault++
 			continue
 		}
-		if delErr := m.DeleteBranch(ctx, e.ID); delErr != nil {
-			// Tolerate already-deleted branches so re-invocation stays idempotent.
+		if delErr := m.DeleteBranch(ctx, row.ID); delErr != nil {
 			if errors.Is(delErr, ErrBranchNotFound) {
 				continue
 			}
-			return deleted, skippedDefault, fmt.Errorf("delete branch %s: %w", e.ID, delErr)
+			return deleted, skippedDefault, fmt.Errorf("delete branch %s: %w", row.ID, delErr)
 		}
 		deleted++
 	}

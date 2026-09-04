@@ -17,86 +17,76 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 	gogitosfs "github.com/go-git/go-billy/v5/osfs"
 	gogit "github.com/go-git/go-git/v5"
 	gogitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // TestReadFile_LazyLoad_NoLocalClone verifies that ReadFile returns
-// ErrBlobContentUnavailable when the Blob entity exists (metadata only,
+// ErrBlobContentUnavailable when the Blob row exists (metadata only,
 // content field empty) but the Repository's bare_clone_path doesn't exist
 // on disk.
 func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
-	now := time.Now().UTC().Format(time.RFC3339)
+	m := newTestManager(t)
+	now := models.NowRFC3339()
 
-	repoEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Repository",
-		Properties: map[string]any{
-			"name": "lazy-repo", "default_branch": "main",
-			"bare_clone_path": "/this/path/does/not/exist/on/disk",
-			"source_url":      "file:///nonexistent",
-			"created_at":      now, "updated_at": now,
-		},
+	repoRow := gormstore.RepositoryToRow(models.Repository{
+		Name: "lazy-repo", DefaultBranch: "main", SourceURL: "file:///nonexistent",
+		CreatedAt: now, UpdatedAt: now,
 	})
-	if err != nil {
+	repoRow.BareClonePath = "/this/path/does/not/exist/on/disk"
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&repoRow).Error; err != nil {
 		t.Fatalf("create Repository: %v", err)
 	}
-	branchEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Branch",
-		Properties: map[string]any{"name": "main", "status": "fetched", "is_default": true, "created_at": now, "updated_at": now},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repoEnt.ID},
-		},
-	})
-	if err != nil {
+
+	branchRow := gormstore.BranchToRow(models.Branch{Name: "main", IsDefault: true, CreatedAt: now, UpdatedAt: now})
+	branchRow.RepositoryID = gormstore.StringToNullable(repoRow.ID)
+	branchRow.Status = "fetched"
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("create Branch: %v", err)
 	}
-	blobEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Blob",
-		Properties: map[string]any{
-			"sha": "dddddddddddddddddddddddddddddddddddddddd", "path": "file.txt", "name": "file.txt",
-			"extension": "txt", "size": int64(10), "encoding": "utf-8", "content": "", "created_at": now,
-		},
+
+	blobRow := gormstore.BlobToRow(models.Blob{
+		SHA: "dddddddddddddddddddddddddddddddddddddddd", Path: "file.txt", Name: "file.txt",
+		Extension: "txt", Size: 10, Encoding: "utf-8", Content: "", CreatedAt: now,
 	})
-	if err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
 		t.Fatalf("create Blob: %v", err)
 	}
-	treeEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Tree",
-		Properties: map[string]any{"sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "path": "", "created_at": now},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "has_blob", ToID: blobEnt.ID},
-		},
-	})
-	if err != nil {
+
+	treeRow := gormstore.TreeToRow(models.Tree{SHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Path: "", CreatedAt: now})
+	if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
 		t.Fatalf("create Tree: %v", err)
 	}
-	commitEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Commit",
-		Properties: map[string]any{"sha": "ffffffffffffffffffffffffffffffffffffffff", "message": "stub commit", "created_at": now},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "has_tree", ToID: treeEnt.ID},
-		},
-	})
-	if err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
+		Create(&gormstore.TreeBlobRow{TreeID: treeRow.ID, BlobID: blobRow.ID}).Error; err != nil {
+		t.Fatalf("link tree_blobs: %v", err)
+	}
+
+	commitRow := gormstore.CommitToRow(models.Commit{SHA: "ffffffffffffffffffffffffffffffffffffffff", Message: "stub commit", CreatedAt: now})
+	commitRow.TreeID = gormstore.StringToNullable(treeRow.ID)
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("create Commit: %v", err)
 	}
-	if _, err := m.dm.UpdateEntity(ctx, branchEnt.ID, updateEntityReq(map[string]any{"head_commit_id": commitEnt.ID})); err != nil {
+
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchRow.ID).
+		Update("head_commit_id", commitRow.ID).Error; err != nil {
 		t.Fatalf("update branch HEAD: %v", err)
 	}
 
-	_, err = m.ReadFile(ctx, branchEnt.ID, "file.txt")
+	_, err := m.ReadFile(ctx, branchRow.ID, "file.txt")
 	if !errors.Is(err, ErrBlobContentUnavailable) {
 		t.Errorf("ReadFile (no local clone): got %v, want ErrBlobContentUnavailable", err)
 	}
 }
 
 func TestGetFetchBranchStatus_NotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	_, err := m.GetFetchBranchStatus(context.Background(), "nonexistent-job-id")
 	if !errors.Is(err, ErrImportJobNotFound) {
 		t.Errorf("GetFetchBranchStatus unknown ID: got %v, want ErrImportJobNotFound", err)
@@ -158,13 +148,13 @@ func makeLocalGitSource(t *testing.T) string {
 
 // TestImportRepo_LocalGitSource_EndToEnd verifies, against a real local git
 // repository (no network): ImportRepo completes within 10s, only a stub
-// Branch entity is written by Phase 1 (no Commit/Tree/Blob yet — those come
+// Branch row is written by Phase 1 (no Commit/Tree/Blob yet — those come
 // from the auto-triggered FetchBranch, which then completes and materialises
 // them), a completion event fires, and the imported file is readable.
 func TestImportRepo_LocalGitSource_EndToEnd(t *testing.T) {
 	bareDir := makeLocalGitSource(t)
 	ctx := context.Background()
-	m, pub := newTestManagerWithPublisher()
+	m, pub := newTestManagerWithPublisher(t)
 
 	start := time.Now()
 	// gogit.PlainInit defaults new repos to branch "master", not "main" —
@@ -178,7 +168,7 @@ func TestImportRepo_LocalGitSource_EndToEnd(t *testing.T) {
 	}
 
 	deadline := time.After(10 * time.Second)
-	var final ImportJob
+	var final models.ImportJob
 poll:
 	for {
 		select {
@@ -206,22 +196,22 @@ poll:
 		t.Errorf("expected TopicRepoImported published, got %v", pub.published())
 	}
 
-	branches, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Branch"})
-	if err != nil || len(branches) == 0 {
-		t.Fatalf("no Branch entities found after import (err=%v)", err)
+	var branches []gormstore.BranchRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Find(&branches).Error; err != nil || len(branches) == 0 {
+		t.Fatalf("no Branch rows found after import (err=%v)", err)
 	}
 
 	// The default branch's auto-fetch was triggered synchronously by
 	// runImport; poll until it clears "fetching"/"stub" (background
 	// goroutine) so we can assert the README is actually readable.
-	repos, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Repository"})
-	if err != nil || len(repos) != 1 {
+	var repos []gormstore.RepositoryRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Find(&repos).Error; err != nil || len(repos) != 1 {
 		t.Fatalf("expected exactly one Repository, got %d (err=%v)", len(repos), err)
 	}
 	repoID := repos[0].ID
 
 	fetchDeadline := time.After(10 * time.Second)
-	var mainBranch Branch
+	var mainBranch models.Branch
 fetchPoll:
 	for {
 		select {
@@ -237,16 +227,15 @@ fetchPoll:
 					continue
 				}
 				mainBranch = b
-				ent, err := m.dm.GetEntity(ctx, b.ID)
-				if err != nil {
+				var branchRow gormstore.BranchRow
+				if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", b.ID).First(&branchRow).Error; err != nil {
 					continue
 				}
-				status, _ := ent.Properties["status"].(string)
-				if status == branchStatusFetched {
+				if branchRow.Status == branchStatusFetched {
 					break fetchPoll
 				}
-				if status == branchStatusFetchFailed {
-					t.Fatalf("branch fetch failed: %v", ent.Properties["error_message"])
+				if branchRow.Status == branchStatusFetchFailed {
+					t.Fatalf("branch fetch failed: %v", branchRow.ErrorMessage)
 				}
 			}
 		}

@@ -1,5 +1,15 @@
 // git_impl_graph_query_test.go — G9 fidelity port of CodeValdGit's
-// git_impl_graph_query_test.go: GitManager.QueryGraph (GIT-026).
+// git_impl_graph_query_test.go: GitManager.QueryGraph (GIT-026) and
+// GitManager.GetNeighborhood (GIT-020).
+//
+// GetNeighborhood's fixtures were originally built from arbitrary "Node"
+// entities linked by "next" edges — a capability the flattened GORM schema
+// deliberately no longer offers (see this repo's CLAUDE.md: no generic
+// polymorphic edge table survives the entitygraph->GORM migration). The
+// same BFS properties (both directions followed, depth clamp, node cap,
+// edge-survives-cap) are now exercised via real Commit rows linked by
+// git_commit_parents — a genuinely many-to-many, self-referencing relation
+// that supports the same arbitrary fan-out/depth shapes the old fixtures did.
 package mwanachamagit
 
 import (
@@ -8,48 +18,35 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-// seedTaggedWith creates a tagged_with relationship directly on m.dm so the
-// signal/note/branch_id properties are preserved exactly as a real sync
-// would write them.
+// seedTaggedWith creates a tagged_with row directly so the signal/note/
+// branch_id columns are set exactly as a real sync would write them.
 func seedTaggedWith(t *testing.T, m *gitManager, blobID, kwID, signal, branchID string) {
 	t.Helper()
-	_, err := m.dm.CreateRelationship(context.Background(), entitygraph.CreateRelationshipRequest{
-		Name:   "tagged_with",
-		FromID: blobID,
-		ToID:   kwID,
-		Properties: map[string]any{
-			"signal":    signal,
-			"note":      "",
-			"branch_id": branchID,
-		},
-	})
-	if err != nil {
+	row := gormstore.BlobKeywordTagRow{
+		BranchID: branchID, BlobID: blobID, KeywordID: kwID, Signal: signal, CreatedAt: models.NowRFC3339(),
+	}
+	if err := m.db.WithContext(context.Background()).Table(m.tables.BlobKeywordTags).Create(&row).Error; err != nil {
 		t.Fatalf("seedTaggedWith: %v", err)
 	}
 }
 
-// listBlobIDs returns the entity IDs of all Blob entities in m.dm.
+// listBlobIDs returns the IDs of all Blob rows.
 func listBlobIDs(t *testing.T, m *gitManager) []string {
 	t.Helper()
-	blobs, err := m.dm.ListEntities(context.Background(), entitygraph.EntityFilter{
-		TypeID: "Blob",
-	})
-	if err != nil {
+	var ids []string
+	if err := m.db.WithContext(context.Background()).Table(m.tables.Blobs).Pluck("id", &ids).Error; err != nil {
 		t.Fatalf("listBlobIDs: %v", err)
-	}
-	ids := make([]string, len(blobs))
-	for i, b := range blobs {
-		ids[i] = b.ID
 	}
 	return ids
 }
 
 func TestQueryGraph_EmptyBody_ReturnsTaggedBlobs(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -75,7 +72,7 @@ func TestQueryGraph_EmptyBody_ReturnsTaggedBlobs(t *testing.T) {
 
 func TestQueryGraph_FileTypeFilter(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -101,7 +98,7 @@ func TestQueryGraph_FileTypeFilter(t *testing.T) {
 
 func TestQueryGraph_FolderFilter(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -129,7 +126,7 @@ func TestQueryGraph_FolderFilter(t *testing.T) {
 }
 
 func TestQueryGraph_BranchNotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	_, err := m.QueryGraph(context.Background(), QueryGraphRequest{BranchID: "nonexistent"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent branch, got nil")
@@ -138,7 +135,7 @@ func TestQueryGraph_BranchNotFound(t *testing.T) {
 
 func TestQueryGraph_LimitEnforced(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -162,7 +159,7 @@ func TestQueryGraph_LimitEnforced(t *testing.T) {
 
 func TestQueryGraph_SignalFilter(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -173,14 +170,14 @@ func TestQueryGraph_SignalFilter(t *testing.T) {
 
 	pathSignal := map[string]string{"high.go": "authority", "low.go": "surface"}
 	blobsByID := map[string]string{}
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
+	var allBlobs []gormstore.BlobRow
+	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	for _, b := range allBlobs {
-		path, _ := b.Properties["path"].(string)
-		sig := pathSignal[path]
+		sig := pathSignal[b.Path]
 		if sig == "" {
 			sig = "surface"
 		}
-		blobsByID[b.ID] = path
+		blobsByID[b.ID] = b.Path
 		seedTaggedWith(t, m, b.ID, kw.ID, sig, branch.ID)
 	}
 
@@ -201,7 +198,7 @@ func TestQueryGraph_SignalFilter(t *testing.T) {
 
 func TestQueryGraph_KeywordIDFilter(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -211,11 +208,11 @@ func TestQueryGraph_KeywordIDFilter(t *testing.T) {
 	kwA, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwA", Scope: "agency"})
 	kwB, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwB", Scope: "agency"})
 
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
+	var allBlobs []gormstore.BlobRow
+	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	var aID, bID string
 	for _, b := range allBlobs {
-		path, _ := b.Properties["path"].(string)
-		switch path {
+		switch b.Path {
 		case "a.go":
 			aID = b.ID
 		case "b.go":
@@ -236,7 +233,7 @@ func TestQueryGraph_KeywordIDFilter(t *testing.T) {
 
 func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, _ := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	branch := branches[0]
@@ -244,11 +241,11 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 	writeTestFile(t, m, branch.ID, "y.go", "package y")
 
 	kw, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwE", Scope: "agency"})
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
+	var allBlobs []gormstore.BlobRow
+	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	var xID, yID string
 	for _, b := range allBlobs {
-		path, _ := b.Properties["path"].(string)
-		switch path {
+		switch b.Path {
 		case "x.go":
 			xID = b.ID
 		case "y.go":
@@ -256,11 +253,11 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 		}
 		seedTaggedWith(t, m, b.ID, kw.ID, "surface", branch.ID)
 	}
-	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name: "references", FromID: xID, ToID: yID,
-		Properties: map[string]any{"descriptor": "depends_on", "branch_id": branch.ID},
-	}); err != nil {
-		t.Fatalf("CreateRelationship references: %v", err)
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).Create(&gormstore.BlobReferenceRow{
+		BranchID: branch.ID, FromBlobID: xID, Name: "references", ToBlobID: yID,
+		Descriptor: "depends_on", CreatedAt: models.NowRFC3339(),
+	}).Error; err != nil {
+		t.Fatalf("create BlobReferenceRow: %v", err)
 	}
 
 	result, err := m.QueryGraph(ctx, QueryGraphRequest{BranchID: branch.ID})
@@ -280,36 +277,31 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 
 // ── GetNeighborhood (GIT-020) ─────────────────────────────────────────────────
 //
-// GetNeighborhood used to delegate to entitygraph.DataManager.TraverseGraph,
-// a single recursive-CTE query against Postgres. That method was removed
-// from DataManager entirely when the store dropped per-agency scoping, so
-// GetNeighborhood is now a manual BFS built out of ListRelationships/
-// GetEntity (see traverseNeighborhood in git_impl_graph.go). These tests
-// cover the behavior that traversal must preserve: the starting entity
-// always included, both edge directions followed, the depth clamp to
-// [1, 3], and the 100-node hard cap.
+// These tests cover the behavior traversal must preserve: the starting
+// entity always included, both edge directions followed, the depth clamp
+// to [1, 3], and the 100-node hard cap — now exercised over real Commit rows
+// linked by git_commit_parents (a genuinely many-to-many, self-referencing
+// relation) instead of the entitygraph-era generic "Node"/"next" fixtures.
 
-// neighborhoodTestNode creates a bare entity of the given TypeID/name for
-// use as a graph-traversal fixture — GetNeighborhood doesn't care what type
-// an entity is, only how it's connected.
-func neighborhoodTestNode(t *testing.T, m *gitManager, name string) entitygraph.Entity {
+// neighborhoodTestNode creates a bare Commit row for use as a graph-traversal
+// fixture — GetNeighborhood doesn't care what a node's own fields are, only
+// how it's connected via git_commit_parents.
+func neighborhoodTestNode(t *testing.T, m *gitManager, name string) gormstore.CommitRow {
 	t.Helper()
-	e, err := m.dm.CreateEntity(context.Background(), entitygraph.CreateEntityRequest{
-		TypeID:     "Node",
-		Properties: map[string]any{"name": name},
-	})
-	if err != nil {
+	row := gormstore.CommitToRow(models.Commit{SHA: name, Message: name, CreatedAt: models.NowRFC3339()})
+	if err := m.db.WithContext(context.Background()).Table(m.tables.Commits).Create(&row).Error; err != nil {
 		t.Fatalf("create node %q: %v", name, err)
 	}
-	return e
+	return row
 }
 
-// neighborhoodTestEdge links two nodes with a "next" relationship.
+// neighborhoodTestEdge links two commits with a has_parent row (fromID is
+// the "commit", toID is its "parent" — direction is arbitrary for these
+// tests, which only care that both directions get traversed).
 func neighborhoodTestEdge(t *testing.T, m *gitManager, fromID, toID string) {
 	t.Helper()
-	if _, err := m.dm.CreateRelationship(context.Background(), entitygraph.CreateRelationshipRequest{
-		Name: "next", FromID: fromID, ToID: toID,
-	}); err != nil {
+	if err := m.db.WithContext(context.Background()).Table(m.tables.CommitParents).
+		Create(&gormstore.CommitParentRow{CommitID: fromID, ParentID: toID}).Error; err != nil {
 		t.Fatalf("link %s -> %s: %v", fromID, toID, err)
 	}
 }
@@ -332,7 +324,7 @@ func neighborhoodTestBranch(t *testing.T, m *gitManager) string {
 
 func TestGetNeighborhood_IncludesStartAndBothDirections(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 
 	a := neighborhoodTestNode(t, m, "a")
@@ -369,11 +361,11 @@ func TestGetNeighborhood_IncludesStartAndBothDirections(t *testing.T) {
 
 func TestGetNeighborhood_DepthClamp(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 
 	// Chain: n0 -> n1 -> n2 -> n3 -> n4 (5 nodes, 4 hops).
-	nodes := make([]entitygraph.Entity, 5)
+	nodes := make([]gormstore.CommitRow, 5)
 	for i := range nodes {
 		nodes[i] = neighborhoodTestNode(t, m, fmt.Sprintf("n%d", i))
 	}
@@ -409,7 +401,7 @@ func TestGetNeighborhood_DepthClamp(t *testing.T) {
 
 func TestGetNeighborhood_NodeCapEnforced(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 
 	center := neighborhoodTestNode(t, m, "center")
@@ -441,39 +433,28 @@ func TestGetNeighborhood_NodeCapEnforced(t *testing.T) {
 // round. That node (and its edges' other endpoint) still ended up in the
 // returned vertex set — since it was already marked visited in a prior
 // round — but the edge between them silently vanished from the result
-// because neither endpoint's own ListRelationships call ever ran.
+// because neither endpoint's own edges were ever queried.
 //
 // Shape: center -> hub1, center -> hub2, center -> witness (round 1, so all
 // three are admitted before any cap pressure exists). hub1 additionally fans
 // out to far more leaves than the remaining node budget (100 - 4 already
-// visited = 96), so processing hub1's own relationships — first in round 2's
-// frontier, since it was discovered first — exhausts the cap by itself.
-// hub2 is second in that frontier; hub2 -> witness is an edge only hub2's
-// own relationship query can reveal (witness has no other edge to hub2, and
-// no other already-processed node's query surfaces it either). Because
-// witness was already visited before round 2 started, the edge's survival
-// doesn't depend on whether hub2 itself makes it under the cap — only on
-// whether hub2 gets queried at all.
+// visited = 96), so processing hub1's own edges exhausts the cap by itself.
+// hub2's only edge (hub2 -> witness) must still be discoverable since
+// [gormstore.NeighborhoodEdges] queries the whole frontier in one shot per
+// level, not per-node.
 func TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 
 	center := neighborhoodTestNode(t, m, "center")
 	hub1 := neighborhoodTestNode(t, m, "hub1")
 	hub2 := neighborhoodTestNode(t, m, "hub2")
 	witness := neighborhoodTestNode(t, m, "witness")
-	// Creation order fixes discovery order: round 2's frontier becomes
-	// [hub1, hub2, witness] (the fake DataManager lists relationships in
-	// creation order, see fake_datamanager_test.go's relOrder).
 	neighborhoodTestEdge(t, m, center.ID, hub1.ID)
 	neighborhoodTestEdge(t, m, center.ID, hub2.ID)
 	neighborhoodTestEdge(t, m, center.ID, witness.ID)
 
-	// hub1's own edges, witness link first: recorded regardless of the cap
-	// (hub1 is first in the frontier, so it's never at risk of being
-	// skipped), then enough leaves to exhaust the remaining 96-node budget
-	// by itself.
 	neighborhoodTestEdge(t, m, hub1.ID, witness.ID)
 	const fanout = 150 // > 96 remaining budget, so hub1 alone fills the cap
 	for i := 0; i < fanout; i++ {
@@ -481,8 +462,6 @@ func TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap(t *testing.T) {
 		neighborhoodTestEdge(t, m, hub1.ID, leaf.ID)
 	}
 
-	// hub2's only edge: the one that must survive being second in a
-	// cap-exhausted frontier.
 	neighborhoodTestEdge(t, m, hub2.ID, witness.ID)
 
 	result, err := m.GetNeighborhood(ctx, branchID, center.ID, 3)
@@ -518,7 +497,7 @@ func TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap(t *testing.T) {
 }
 
 func TestGetNeighborhood_BranchNotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	a := neighborhoodTestNode(t, m, "a")
 	_, err := m.GetNeighborhood(context.Background(), "nonexistent-branch", a.ID, 1)
 	if !errors.Is(err, ErrBranchNotFound) {
@@ -527,17 +506,17 @@ func TestGetNeighborhood_BranchNotFound(t *testing.T) {
 }
 
 func TestGetNeighborhood_EntityNotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 	_, err := m.GetNeighborhood(context.Background(), branchID, "nonexistent-entity-and-not-a-path", 1)
-	if !errors.Is(err, entitygraph.ErrEntityNotFound) {
-		t.Fatalf("expected entitygraph.ErrEntityNotFound, got %v", err)
+	if !errors.Is(err, ErrEntityNotFound) {
+		t.Fatalf("expected ErrEntityNotFound, got %v", err)
 	}
 }
 
 func TestGetNeighborhood_NoOutboundOrInboundEdges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	branchID := neighborhoodTestBranch(t, m)
 	isolated := neighborhoodTestNode(t, m, "isolated")
 

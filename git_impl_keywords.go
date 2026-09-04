@@ -6,7 +6,6 @@
 //
 //   - Branch-scoped edge CRUD ([GitManager.CreateEdge], [GitManager.DeleteEdge])
 //
-// All storage operations go through the injected [entitygraph.DataManager].
 // Edges are branch-scoped and follow the DR-010 lifecycle rules: replicated to
 // main on merge, deleted on branch delete, migrated on file rename.
 package mwanachamagit
@@ -15,9 +14,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // validDocEdges is the set of allowed documentation relationship names.
@@ -35,121 +37,99 @@ var validDocEdges = map[string]bool{
 
 // ── Keyword CRUD ──────────────────────────────────────────────────────────────
 
-// CreateKeyword creates a new Keyword entity in the taxonomy.
+// CreateKeyword creates a new Keyword row in the taxonomy.
 // If req.ParentID is set the keyword is added as a child of that parent.
 // Returns [ErrKeywordAlreadyExists] if a keyword with the same name exists
 // under the same parent. Returns [ErrKeywordNotFound] if req.ParentID does not
 // resolve to a keyword.
-func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest) (Keyword, error) {
-	// Validate parent exists if specified.
+func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest) (models.Keyword, error) {
 	if req.ParentID != "" {
-		_, err := m.dm.GetEntity(ctx, req.ParentID)
-		if err != nil {
-			if errors.Is(err, entitygraph.ErrEntityNotFound) {
-				return Keyword{}, ErrKeywordNotFound
-			}
-			return Keyword{}, fmt.Errorf("CreateKeyword: get parent: %w", err)
+		var count int64
+		if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+			Where("id = ? AND NOT deleted", req.ParentID).Count(&count).Error; err != nil {
+			return models.Keyword{}, fmt.Errorf("CreateKeyword: get parent: %w", err)
+		}
+		if count == 0 {
+			return models.Keyword{}, ErrKeywordNotFound
 		}
 	}
 
-	// Check for name collision under the same parent.
-	siblings, err := m.listKeywordsByParent(ctx, req.ParentID)
-	if err != nil {
-		return Keyword{}, fmt.Errorf("CreateKeyword: list siblings: %w", err)
+	siblingsQ := m.db.WithContext(ctx).Table(m.tables.Keywords).Where("NOT deleted")
+	if req.ParentID == "" {
+		siblingsQ = siblingsQ.Where("parent_id IS NULL")
+	} else {
+		siblingsQ = siblingsQ.Where("parent_id = ?", req.ParentID)
 	}
-	for _, k := range siblings {
-		if entitygraph.StringProp(k.Properties, "name") == req.Name {
-			return Keyword{}, ErrKeywordAlreadyExists
+	var siblings []gormstore.KeywordRow
+	if err := siblingsQ.Find(&siblings).Error; err != nil {
+		return models.Keyword{}, fmt.Errorf("CreateKeyword: list siblings: %w", err)
+	}
+	for _, s := range siblings {
+		if s.Name == req.Name {
+			return models.Keyword{}, ErrKeywordAlreadyExists
 		}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	rels := []entitygraph.EntityRelationshipRequest{}
-	if req.ParentID != "" {
-		rels = append(rels, entitygraph.EntityRelationshipRequest{
-			Name: "belongs_to_parent",
-			ToID: req.ParentID,
-		})
-	}
-
-	entity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Keyword",
-		Properties: map[string]any{
-			"name":        req.Name,
-			"description": req.Description,
-			"scope":       req.Scope,
-			"created_at":  now,
-			"updated_at":  now,
-		},
-		Relationships: rels,
+	now := models.NowRFC3339()
+	row := gormstore.KeywordToRow(models.Keyword{
+		Name:        req.Name,
+		Description: req.Description,
+		Scope:       req.Scope,
+		ParentID:    req.ParentID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	})
-	if err != nil {
-		return Keyword{}, fmt.Errorf("CreateKeyword: create entity: %w", err)
+	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).Create(&row).Error; err != nil {
+		return models.Keyword{}, fmt.Errorf("CreateKeyword: create: %w", err)
 	}
-
-	// Create the forward has_child edge (parent → keyword) so GetKeywordTree
-	// can traverse downwards.
-	if req.ParentID != "" {
-		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			Name:   "has_child",
-			FromID: req.ParentID,
-			ToID:   entity.ID,
-		}); err != nil {
-			return Keyword{}, fmt.Errorf("CreateKeyword: link has_child: %w", err)
-		}
-	}
-
-	return entityToKeyword(entity), nil
+	return gormstore.KeywordFromRow(row), nil
 }
 
-// GetKeyword retrieves a Keyword entity by its entitygraph ID.
+// GetKeyword retrieves a Keyword row by its ID, including its direct
+// children's IDs.
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
-func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (Keyword, error) {
-	entity, err := m.dm.GetEntity(ctx, keywordID)
+func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (models.Keyword, error) {
+	var row gormstore.KeywordRow
+	err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+		Where("id = ? AND NOT deleted", keywordID).First(&row).Error
 	if err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return Keyword{}, ErrKeywordNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Keyword{}, ErrKeywordNotFound
 		}
-		return Keyword{}, fmt.Errorf("GetKeyword %s: %w", keywordID, err)
+		return models.Keyword{}, fmt.Errorf("GetKeyword %s: %w", keywordID, err)
 	}
-	if entity.TypeID != "Keyword" {
-		return Keyword{}, ErrKeywordNotFound
-	}
-	kw := entityToKeyword(entity)
-	// Populate ParentID from belongs_to_parent relationship.
-	parentRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: keywordID,
-		Name:   "belongs_to_parent",
-	})
+	kw := gormstore.KeywordFromRow(row)
+	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
 	if err != nil {
-		return Keyword{}, fmt.Errorf("GetKeyword %s: list parent: %w", keywordID, err)
+		return models.Keyword{}, fmt.Errorf("GetKeyword %s: list children: %w", keywordID, err)
 	}
-	if len(parentRels) > 0 {
-		kw.ParentID = parentRels[0].ToID
-	}
+	kw.ChildIDs = childIDs
 	return kw, nil
 }
 
-// ListKeywords returns Keyword entities matching the given filter.
+// ListKeywords returns Keyword rows matching the given filter.
 // When filter.ParentID is empty, root keywords (no parent) are returned.
 // Set filter.ParentID to a keyword ID to list its direct children.
-func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]Keyword, error) {
-	entities, err := m.listKeywordsByParent(ctx, filter.ParentID)
-	if err != nil {
+func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]models.Keyword, error) {
+	q := m.db.WithContext(ctx).Table(m.tables.Keywords).Where("NOT deleted")
+	if filter.ParentID == "" {
+		q = q.Where("parent_id IS NULL")
+	} else {
+		q = q.Where("parent_id = ?", filter.ParentID)
+	}
+	if filter.Scope != "" {
+		q = q.Where("scope = ?", filter.Scope)
+	}
+	if filter.Limit > 0 {
+		q = q.Limit(filter.Limit)
+	}
+	var rows []gormstore.KeywordRow
+	if err := q.Order("id").Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListKeywords: %w", err)
 	}
-
-	out := make([]Keyword, 0, len(entities))
-	for _, e := range entities {
-		kw := entityToKeyword(e)
-		if filter.Scope != "" && kw.Scope != filter.Scope {
-			continue
-		}
-		kw.ParentID = filter.ParentID
-		out = append(out, kw)
-		if filter.Limit > 0 && len(out) >= filter.Limit {
-			break
-		}
+	out := make([]models.Keyword, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.KeywordFromRow(r)
 	}
 	return out, nil
 }
@@ -157,120 +137,133 @@ func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]
 // GetKeywordTree returns the full taxonomy subtree rooted at the given
 // keywordID, or the full forest of root keywords when keywordID is empty.
 func (m *gitManager) GetKeywordTree(ctx context.Context, keywordID string) ([]KeywordTreeNode, error) {
-	var rootEntities []entitygraph.Entity
-	var err error
-	if keywordID == "" {
-		// Return all root keywords (no parent).
-		rootEntities, err = m.listKeywordsByParent(ctx, "")
-	} else {
-		// Return children of the given keyword.
-		rootEntities, err = m.listChildEntities(ctx, keywordID)
-	}
+	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
 	if err != nil {
 		return nil, fmt.Errorf("GetKeywordTree: %w", err)
 	}
-
-	nodes := make([]KeywordTreeNode, 0, len(rootEntities))
-	for _, e := range rootEntities {
-		node, err := m.buildKeywordTreeNode(ctx, e)
+	nodes := make([]KeywordTreeNode, 0, len(childIDs))
+	if len(childIDs) == 0 {
+		return nodes, nil
+	}
+	var rows []gormstore.KeywordRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+		Where("id IN ? AND NOT deleted", childIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("GetKeywordTree: %w", err)
+	}
+	byID := make(map[string]gormstore.KeywordRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	for _, id := range childIDs {
+		row, ok := byID[id]
+		if !ok {
+			continue
+		}
+		node, err := m.buildKeywordTreeNode(ctx, row)
 		if err != nil {
-			return nil, fmt.Errorf("GetKeywordTree: build node %s: %w", e.ID, err)
+			return nil, fmt.Errorf("GetKeywordTree: build node %s: %w", id, err)
 		}
 		nodes = append(nodes, node)
 	}
 	return nodes, nil
 }
 
-// UpdateKeyword updates the mutable fields of a Keyword entity.
+// UpdateKeyword updates the mutable fields of a Keyword row.
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
-func (m *gitManager) UpdateKeyword(ctx context.Context, keywordID string, req UpdateKeywordRequest) (Keyword, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	entity, err := m.dm.UpdateEntity(ctx, keywordID, entitygraph.UpdateEntityRequest{
-		Properties: map[string]any{
+func (m *gitManager) UpdateKeyword(ctx context.Context, keywordID string, req UpdateKeywordRequest) (models.Keyword, error) {
+	result := m.db.WithContext(ctx).Table(m.tables.Keywords).Where("id = ? AND NOT deleted", keywordID).
+		Updates(map[string]any{
 			"name":        req.Name,
 			"description": req.Description,
 			"scope":       req.Scope,
-			"updated_at":  now,
-		},
-	})
-	if err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return Keyword{}, ErrKeywordNotFound
-		}
-		return Keyword{}, fmt.Errorf("UpdateKeyword %s: %w", keywordID, err)
+			"updated_at":  models.NowRFC3339(),
+		})
+	if result.Error != nil {
+		return models.Keyword{}, fmt.Errorf("UpdateKeyword %s: %w", keywordID, result.Error)
 	}
-	return entityToKeyword(entity), nil
+	if result.RowsAffected == 0 {
+		return models.Keyword{}, ErrKeywordNotFound
+	}
+	return m.GetKeyword(ctx, keywordID)
 }
 
-// DeleteKeyword removes a Keyword entity and re-parents its children to
+// DeleteKeyword removes a Keyword row and re-parents its children to
 // the deleted keyword's parent (or promotes them to root if the deleted
-// keyword had no parent).
+// keyword had no parent). Also removes any tagged_with rows referencing the
+// deleted keyword — the entitygraph-era version left these dangling; a
+// deleted keyword can no longer be a valid tag target, so this cascade is a
+// deliberate fix made along the way, not a mechanical port.
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
 func (m *gitManager) DeleteKeyword(ctx context.Context, keywordID string) error {
-	// Fetch keyword to resolve parent.
 	kw, err := m.GetKeyword(ctx, keywordID)
 	if err != nil {
 		return fmt.Errorf("DeleteKeyword %s: %w", keywordID, err)
 	}
 
-	// Fetch direct children.
-	children, err := m.listChildEntities(ctx, keywordID)
-	if err != nil {
-		return fmt.Errorf("DeleteKeyword %s: list children: %w", keywordID, err)
+	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+		Where("parent_id = ?", keywordID).
+		Update("parent_id", gormstore.StringToNullable(kw.ParentID)).Error; err != nil {
+		return fmt.Errorf("DeleteKeyword %s: reparent children: %w", keywordID, err)
 	}
 
-	// Re-parent each child to the deleted keyword's parent.
-	for _, child := range children {
-		// Remove belongs_to_parent → deleted keyword.
-		if err := m.removeRelationshipByEndpoints(ctx, child.ID, "belongs_to_parent", keywordID); err != nil {
-			return fmt.Errorf("DeleteKeyword %s: remove child parent rel: %w", keywordID, err)
-		}
-		// Remove has_child → child from deleted keyword.
-		if err := m.removeRelationshipByEndpoints(ctx, keywordID, "has_child", child.ID); err != nil {
-			return fmt.Errorf("DeleteKeyword %s: remove has_child rel: %w", keywordID, err)
-		}
-		// Re-attach child to new parent (if any).
-		if kw.ParentID != "" {
-			if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				Name:   "belongs_to_parent",
-				FromID: child.ID,
-				ToID:   kw.ParentID,
-			}); err != nil {
-				return fmt.Errorf("DeleteKeyword %s: reparent child: %w", keywordID, err)
-			}
-			if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				Name:   "has_child",
-				FromID: kw.ParentID,
-				ToID:   child.ID,
-			}); err != nil {
-				return fmt.Errorf("DeleteKeyword %s: reparent has_child: %w", keywordID, err)
-			}
-		}
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
+		Where("keyword_id = ?", keywordID).Delete(&gormstore.BlobKeywordTagRow{}).Error; err != nil {
+		return fmt.Errorf("DeleteKeyword %s: remove tagged_with rows: %w", keywordID, err)
 	}
 
-	// Delete the keyword entity itself.
-	if err := m.dm.DeleteEntity(ctx, keywordID); err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return ErrKeywordNotFound
-		}
-		return fmt.Errorf("DeleteKeyword %s: delete entity: %w", keywordID, err)
+	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+		Where("id = ?", keywordID).Update("deleted", true).Error; err != nil {
+		return fmt.Errorf("DeleteKeyword %s: delete row: %w", keywordID, err)
 	}
 	return nil
+}
+
+// buildKeywordTreeNode recursively builds a [KeywordTreeNode] for row.
+func (m *gitManager) buildKeywordTreeNode(ctx context.Context, row gormstore.KeywordRow) (KeywordTreeNode, error) {
+	kw := gormstore.KeywordFromRow(row)
+	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, row.ID)
+	if err != nil {
+		return KeywordTreeNode{}, err
+	}
+	kw.ChildIDs = childIDs
+
+	childNodes := make([]KeywordTreeNode, 0, len(childIDs))
+	if len(childIDs) > 0 {
+		var childRows []gormstore.KeywordRow
+		if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
+			Where("id IN ? AND NOT deleted", childIDs).Find(&childRows).Error; err != nil {
+			return KeywordTreeNode{}, err
+		}
+		byID := make(map[string]gormstore.KeywordRow, len(childRows))
+		for _, r := range childRows {
+			byID[r.ID] = r
+		}
+		for _, id := range childIDs {
+			childRow, ok := byID[id]
+			if !ok {
+				continue
+			}
+			node, err := m.buildKeywordTreeNode(ctx, childRow)
+			if err != nil {
+				return KeywordTreeNode{}, err
+			}
+			childNodes = append(childNodes, node)
+		}
+	}
+	return KeywordTreeNode{Keyword: kw, Children: childNodes}, nil
 }
 
 // ── Branch-Scoped Edge CRUD ───────────────────────────────────────────────────
 
 // CreateEdge creates a documentation edge between two entities on the
 // specified branch. Supported relationship names: "tagged_with", "documents",
-// "documented_by", "depends_on", "imported_by".
+// "documented_by", "depends_on", "imported_by", "references", "referenced_by".
 // Returns [ErrBranchNotFound] if the branch does not exist.
 // Returns [ErrInvalidRelationship] if the relationship name is not valid.
 func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) error {
 	if !validDocEdges[req.RelationshipName] {
 		return fmt.Errorf("CreateEdge: %w: %q", ErrInvalidRelationship, req.RelationshipName)
 	}
-
-	// Verify the branch exists.
 	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
 			return ErrBranchNotFound
@@ -278,14 +271,33 @@ func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) erro
 		return fmt.Errorf("CreateEdge: get branch %s: %w", req.BranchID, err)
 	}
 
-	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   req.RelationshipName,
-		FromID: req.FromEntityID,
-		ToID:   req.ToEntityID,
-		Properties: mergeEdgeProps(req.Properties, map[string]any{
-			"branch_id": req.BranchID,
-		}),
-	}); err != nil {
+	now := models.NowRFC3339()
+	if req.RelationshipName == "tagged_with" {
+		row := gormstore.BlobKeywordTagRow{
+			BranchID:  req.BranchID,
+			BlobID:    req.FromEntityID,
+			KeywordID: req.ToEntityID,
+			Signal:    strMapProp(req.Properties, "signal"),
+			Note:      strMapProp(req.Properties, "note"),
+			CreatedAt: now,
+		}
+		if err := m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
+			Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+			return fmt.Errorf("CreateEdge %s (%s→%s): %w", req.RelationshipName, req.FromEntityID, req.ToEntityID, err)
+		}
+		return nil
+	}
+
+	row := gormstore.BlobReferenceRow{
+		BranchID:   req.BranchID,
+		FromBlobID: req.FromEntityID,
+		Name:       req.RelationshipName,
+		ToBlobID:   req.ToEntityID,
+		Descriptor: strMapProp(req.Properties, "descriptor"),
+		CreatedAt:  now,
+	}
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
+		Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 		return fmt.Errorf("CreateEdge %s (%s→%s): %w", req.RelationshipName, req.FromEntityID, req.ToEntityID, err)
 	}
 	return nil
@@ -299,8 +311,6 @@ func (m *gitManager) DeleteEdge(ctx context.Context, req DeleteEdgeRequest) erro
 	if !validDocEdges[req.RelationshipName] {
 		return fmt.Errorf("DeleteEdge: %w: %q", ErrInvalidRelationship, req.RelationshipName)
 	}
-
-	// Verify the branch exists.
 	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
 			return ErrBranchNotFound
@@ -308,98 +318,22 @@ func (m *gitManager) DeleteEdge(ctx context.Context, req DeleteEdgeRequest) erro
 		return fmt.Errorf("DeleteEdge: get branch %s: %w", req.BranchID, err)
 	}
 
-	if err := m.removeRelationshipByEndpoints(ctx, req.FromEntityID, req.RelationshipName, req.ToEntityID); err != nil {
-		return fmt.Errorf("DeleteEdge %s (%s→%s): %w", req.RelationshipName, req.FromEntityID, req.ToEntityID, err)
+	var result *gorm.DB
+	if req.RelationshipName == "tagged_with" {
+		result = m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
+			Where("branch_id = ? AND blob_id = ? AND keyword_id = ?", req.BranchID, req.FromEntityID, req.ToEntityID).
+			Delete(&gormstore.BlobKeywordTagRow{})
+	} else {
+		result = m.db.WithContext(ctx).Table(m.tables.BlobReferences).
+			Where("branch_id = ? AND from_blob_id = ? AND name = ? AND to_blob_id = ?",
+				req.BranchID, req.FromEntityID, req.RelationshipName, req.ToEntityID).
+			Delete(&gormstore.BlobReferenceRow{})
+	}
+	if result.Error != nil {
+		return fmt.Errorf("DeleteEdge %s (%s→%s): %w", req.RelationshipName, req.FromEntityID, req.ToEntityID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrEdgeNotFound
 	}
 	return nil
-}
-
-// ── Private helpers ───────────────────────────────────────────────────────────
-
-// entityToKeyword maps an entitygraph.Entity of type "Keyword" to [Keyword].
-func entityToKeyword(e entitygraph.Entity) Keyword {
-	p := e.Properties
-	return Keyword{
-		ID:          e.ID,
-		Name:        entitygraph.StringProp(p, "name"),
-		Description: entitygraph.StringProp(p, "description"),
-		Scope:       entitygraph.StringProp(p, "scope"),
-		CreatedAt:   entitygraph.StringProp(p, "created_at"),
-		UpdatedAt:   entitygraph.StringProp(p, "updated_at"),
-	}
-}
-
-// listKeywordsByParent returns all Keyword entities whose parent is parentID.
-// When parentID is empty, root keywords (those with no belongs_to_parent edge
-// and whose parent relationship is absent) are returned via ListEntities.
-func (m *gitManager) listKeywordsByParent(ctx context.Context, parentID string) ([]entitygraph.Entity, error) {
-	if parentID == "" {
-		// Return all keywords; the caller can filter roots by checking parent rels.
-		// For root listing, return all keywords with TypeID "Keyword" and rely on
-		// the tree build logic. For now we list all and filter at the caller.
-		return m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			TypeID: "Keyword",
-		})
-	}
-	return m.listChildEntities(ctx, parentID)
-}
-
-// listChildEntities returns Keyword entities that are direct children of parentID
-// via has_child relationships.
-func (m *gitManager) listChildEntities(ctx context.Context, parentID string) ([]entitygraph.Entity, error) {
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: parentID,
-		Name:   "has_child",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listChildEntities %s: %w", parentID, err)
-	}
-	out := make([]entitygraph.Entity, 0, len(rels))
-	for _, rel := range rels {
-		e, err := m.dm.GetEntity(ctx, rel.ToID)
-		if err != nil {
-			continue // skip deleted or missing keywords
-		}
-		out = append(out, e)
-	}
-	return out, nil
-}
-
-// buildKeywordTreeNode recursively builds a [KeywordTreeNode] for entity e.
-func (m *gitManager) buildKeywordTreeNode(ctx context.Context, e entitygraph.Entity) (KeywordTreeNode, error) {
-	kw := entityToKeyword(e)
-	children, err := m.listChildEntities(ctx, e.ID)
-	if err != nil {
-		return KeywordTreeNode{}, err
-	}
-	childNodes := make([]KeywordTreeNode, 0, len(children))
-	for _, child := range children {
-		node, err := m.buildKeywordTreeNode(ctx, child)
-		if err != nil {
-			return KeywordTreeNode{}, err
-		}
-		childNodes = append(childNodes, node)
-	}
-	return KeywordTreeNode{Keyword: kw, Children: childNodes}, nil
-}
-
-// removeRelationshipByEndpoints finds the relationship with the given FromID,
-// Name, and ToID and deletes it. Returns [ErrEdgeNotFound] if not found.
-func (m *gitManager) removeRelationshipByEndpoints(ctx context.Context, fromID, name, toID string) error {
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: fromID,
-		Name:   name,
-	})
-	if err != nil {
-		return fmt.Errorf("removeRelationshipByEndpoints: list: %w", err)
-	}
-	for _, rel := range rels {
-		if rel.ToID == toID {
-			if err := m.dm.DeleteRelationship(ctx, rel.ID); err != nil {
-				return fmt.Errorf("removeRelationshipByEndpoints: delete: %w", err)
-			}
-			return nil
-		}
-	}
-	return ErrEdgeNotFound
 }

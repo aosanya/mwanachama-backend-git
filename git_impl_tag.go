@@ -3,133 +3,100 @@ package mwanachamagit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // ── Tag Management ────────────────────────────────────────────────────────────
 
-// CreateTag creates an immutable Tag entity pointing to the specified commit.
+// CreateTag creates an immutable Tag row pointing to the specified commit.
 // Returns [ErrTagAlreadyExists] if a tag with the given name already exists.
-// Returns [ErrBranchNotFound] if req.CommitID does not resolve to a Commit entity.
-func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (Tag, error) {
+// Returns [ErrBranchNotFound] if req.CommitID does not resolve to a Commit row.
+func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (models.Tag, error) {
 	repo, err := m.GetRepository(ctx, req.RepositoryID)
 	if err != nil {
-		return Tag{}, fmt.Errorf("CreateTag: %w", err)
+		return models.Tag{}, fmt.Errorf("CreateTag: %w", err)
 	}
 
-	// Guard: reject duplicate tag names.
-	tags, err := m.listTagsByRepo(ctx, repo.ID)
-	if err != nil {
-		return Tag{}, fmt.Errorf("CreateTag: list tags: %w", err)
+	var count int64
+	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
+		Where("repository_id = ? AND name = ? AND NOT deleted", repo.ID, req.Name).
+		Count(&count).Error; err != nil {
+		return models.Tag{}, fmt.Errorf("CreateTag: check existing: %w", err)
 	}
-	for _, t := range tags {
-		if entitygraph.StringProp(t.Properties, "name") == req.Name {
-			return Tag{}, ErrTagAlreadyExists
-		}
-	}
-
-	// Validate the target commit exists.
-	commitEntity, err := m.dm.GetEntity(ctx, req.CommitID)
-	if err != nil {
-		return Tag{}, fmt.Errorf("CreateTag: commit %s: %w", req.CommitID, ErrBranchNotFound)
+	if count > 0 {
+		return models.Tag{}, ErrTagAlreadyExists
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	tagEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "Tag",
-		Properties: map[string]any{
-			"name":        req.Name,
-			"sha":         entitygraph.StringProp(commitEntity.Properties, "sha"),
-			"message":     req.Message,
-			"tagger_name": req.TaggerName,
-			"tagger_at":   now,
-			"created_at":  now,
-		},
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repo.ID},
-			{Name: "points_to", ToID: req.CommitID},
-		},
-	})
-	if err != nil {
-		return Tag{}, fmt.Errorf("CreateTag: create entity: %w", err)
+	var commitRow gormstore.CommitRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
+		Where("id = ?", req.CommitID).First(&commitRow).Error; err != nil {
+		return models.Tag{}, fmt.Errorf("CreateTag: commit %s: %w", req.CommitID, ErrBranchNotFound)
 	}
 
-	// Create the forward has_tag edge (repo → tag) so listTagsByRepo
-	// can locate it via RelationshipFilter{Name:"has_tag", FromID: repoID}.
-	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   "has_tag",
-		FromID: repo.ID,
-		ToID:   tagEntity.ID,
-	}); relErr != nil {
-		return Tag{}, fmt.Errorf("CreateTag: link has_tag: %w", relErr)
+	now := models.NowRFC3339()
+	row := gormstore.TagToRow(models.Tag{
+		Name:       req.Name,
+		SHA:        commitRow.SHA,
+		Message:    req.Message,
+		TaggerName: req.TaggerName,
+		TaggerAt:   now,
+		CreatedAt:  now,
+	}, commitRow.ID)
+	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+	if err := m.db.WithContext(ctx).Table(m.tables.Tags).Create(&row).Error; err != nil {
+		return models.Tag{}, fmt.Errorf("CreateTag: create: %w", err)
 	}
-
-	return entityToTag(tagEntity, repo.ID), nil
+	return gormstore.TagFromRow(row), nil
 }
 
-// GetTag retrieves a Tag entity by its entitygraph ID.
+// GetTag retrieves a Tag row by its ID.
 // Returns [ErrTagNotFound] if no tag with that ID exists.
-func (m *gitManager) GetTag(ctx context.Context, tagID string) (Tag, error) {
-	e, err := m.dm.GetEntity(ctx, tagID)
+func (m *gitManager) GetTag(ctx context.Context, tagID string) (models.Tag, error) {
+	var row gormstore.TagRow
+	err := m.db.WithContext(ctx).Table(m.tables.Tags).
+		Where("id = ? AND NOT deleted", tagID).First(&row).Error
 	if err != nil {
-		return Tag{}, ErrTagNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.Tag{}, ErrTagNotFound
+		}
+		return models.Tag{}, fmt.Errorf("GetTag: %w", err)
 	}
-	if e.TypeID != "Tag" {
-		return Tag{}, ErrTagNotFound
-	}
-	repoID := m.resolveParentID(ctx, tagID, "belongs_to_repository")
-	return entityToTag(e, repoID), nil
+	return gormstore.TagFromRow(row), nil
 }
 
-// ListTags returns all Tag entities for the specified repository.
+// ListTags returns all Tag rows for the specified repository.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
-func (m *gitManager) ListTags(ctx context.Context, repoID string) ([]Tag, error) {
+func (m *gitManager) ListTags(ctx context.Context, repoID string) ([]models.Tag, error) {
 	if _, err := m.GetRepository(ctx, repoID); err != nil {
 		return nil, fmt.Errorf("ListTags: %w", err)
 	}
-	tags, err := m.listTagsByRepo(ctx, repoID)
-	if err != nil {
+	var rows []gormstore.TagRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
+		Where("repository_id = ? AND NOT deleted", repoID).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListTags: %w", err)
 	}
-	out := make([]Tag, len(tags))
-	for i, e := range tags {
-		out[i] = entityToTag(e, repoID)
+	out := make([]models.Tag, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.TagFromRow(r)
 	}
 	return out, nil
 }
 
-// DeleteTag removes a Tag entity.
+// DeleteTag removes a Tag row.
 // Returns [ErrTagNotFound] if no tag with that ID exists.
 func (m *gitManager) DeleteTag(ctx context.Context, tagID string) error {
-	if _, err := m.dm.GetEntity(ctx, tagID); err != nil {
-		return ErrTagNotFound
+	if _, err := m.GetTag(ctx, tagID); err != nil {
+		return err
 	}
-	if err := m.dm.DeleteEntity(ctx, tagID); err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
+		Where("id = ?", tagID).Update("deleted", true).Error; err != nil {
 		return fmt.Errorf("DeleteTag: %w", err)
 	}
 	return nil
-}
-
-// listTagsByRepo returns all Tag entities whose has_tag edge points from the
-// given repositoryID.
-func (m *gitManager) listTagsByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name:   "has_tag",
-		FromID: repositoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]entitygraph.Entity, 0, len(rels))
-	for _, r := range rels {
-		e, err := m.dm.GetEntity(ctx, r.ToID)
-		if err != nil {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out, nil
 }

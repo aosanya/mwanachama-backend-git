@@ -9,6 +9,8 @@ package mwanachamagit
 import (
 	"context"
 	"testing"
+
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // TestRollbackByWorkflowRun_PublishesExpectedEvents verifies that rolling
@@ -19,7 +21,7 @@ func TestRollbackByWorkflowRun_PublishesExpectedEvents(t *testing.T) {
 	const targetRun = "wfr_rollback_target"
 	const otherRun = "wfr_rollback_other"
 	ctx := context.Background()
-	m, pub := newTestManagerWithPublisher()
+	m, pub := newTestManagerWithPublisher(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -63,8 +65,8 @@ func TestRollbackByWorkflowRun_PublishesExpectedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMergeRequest other: %v", err)
 	}
-	if gotOther.Status != MergeRequestStatusOpen {
-		t.Errorf("other MR status = %q, want %q (untouched)", gotOther.Status, MergeRequestStatusOpen)
+	if gotOther.Status != models.MergeRequestStatusOpen {
+		t.Errorf("other MR status = %q, want %q (untouched)", gotOther.Status, models.MergeRequestStatusOpen)
 	}
 	_ = target1MR
 	_ = target2MR
@@ -86,7 +88,7 @@ func TestRollbackByWorkflowRun_PublishesExpectedEvents(t *testing.T) {
 func TestRollbackByWorkflowRun_PreservesMergedSHA(t *testing.T) {
 	const runID = "wfr_rollback_merged"
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -102,10 +104,10 @@ func TestRollbackByWorkflowRun_PreservesMergedSHA(t *testing.T) {
 
 	// Directly transition to "merged" with a recorded SHA — skip MergeBranch,
 	// which isn't the behavior under test here.
-	if _, err := m.dm.UpdateEntity(ctx, mr.ID, updateEntityReq(map[string]any{
-		"status":            MergeRequestStatusMerged,
+	if err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).Where("id = ?", mr.ID).Updates(map[string]any{
+		"status":            models.MergeRequestStatusMerged,
 		"merged_commit_sha": "deadbeefdeadbeefdeadbeef",
-	})); err != nil {
+	}).Error; err != nil {
 		t.Fatalf("fake merge transition: %v", err)
 	}
 
@@ -117,8 +119,8 @@ func TestRollbackByWorkflowRun_PreservesMergedSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMergeRequest: %v", err)
 	}
-	if got.Status != MergeRequestStatusRolledBack {
-		t.Errorf("status = %q, want %q", got.Status, MergeRequestStatusRolledBack)
+	if got.Status != models.MergeRequestStatusRolledBack {
+		t.Errorf("status = %q, want %q", got.Status, models.MergeRequestStatusRolledBack)
 	}
 	if got.MergedCommitSHA != "deadbeefdeadbeefdeadbeef" {
 		t.Errorf("merged_commit_sha = %q, want preserved", got.MergedCommitSHA)
@@ -131,7 +133,7 @@ func TestRollbackByWorkflowRun_PreservesMergedSHA(t *testing.T) {
 // complete).
 func TestRollbackByWorkflowRun_NoOpWhenRunProducedNothing(t *testing.T) {
 	ctx := context.Background()
-	m, pub := newTestManagerWithPublisher()
+	m, pub := newTestManagerWithPublisher(t)
 	if _, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"}); err != nil {
 		t.Fatalf("InitRepo: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestRollbackByWorkflowRun_NoOpWhenRunProducedNothing(t *testing.T) {
 func TestRollbackByWorkflowRun_PreservesDefaultBranch(t *testing.T) {
 	const runID = "wfr_rollback_default"
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -166,9 +168,8 @@ func TestRollbackByWorkflowRun_PreservesDefaultBranch(t *testing.T) {
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	defaultBranch := branches[0]
 
-	if _, err := m.dm.UpdateEntity(ctx, defaultBranch.ID, updateEntityReq(map[string]any{
-		"workflow_run_id": runID,
-	})); err != nil {
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", defaultBranch.ID).
+		Update("workflow_run_id", runID).Error; err != nil {
 		t.Fatalf("backfill default branch run_id: %v", err)
 	}
 

@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 func TestGitManager_CreateBranch_PersistsWorkflowRunID(t *testing.T) {
 	const runID = "wfr_branch_001"
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -41,7 +43,7 @@ func TestGitManager_ListBranchesFiltered_ByWorkflowRunID(t *testing.T) {
 	const runA = "wfr_filter_A"
 	const runB = "wfr_filter_B"
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -82,7 +84,7 @@ func TestGitManager_ListBranchesFiltered_ByWorkflowRunID(t *testing.T) {
 func TestGitManager_CreateMergeRequest_PublishesAndPersists(t *testing.T) {
 	const runID = "wfr_mr_001"
 	ctx := context.Background()
-	m, pub := newTestManagerWithPublisher()
+	m, pub := newTestManagerWithPublisher(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -101,8 +103,8 @@ func TestGitManager_CreateMergeRequest_PublishesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMergeRequest: %v", err)
 	}
-	if mr.Status != MergeRequestStatusOpen {
-		t.Errorf("mr.Status = %q, want %q", mr.Status, MergeRequestStatusOpen)
+	if mr.Status != models.MergeRequestStatusOpen {
+		t.Errorf("mr.Status = %q, want %q", mr.Status, models.MergeRequestStatusOpen)
 	}
 	if mr.WorkflowRunID != runID {
 		t.Errorf("mr.WorkflowRunID = %q, want %q", mr.WorkflowRunID, runID)
@@ -125,7 +127,7 @@ func TestGitManager_ListMergeRequests_FilterByWorkflowRunID(t *testing.T) {
 	const runA = "wfr_listmr_A"
 	const runB = "wfr_listmr_B"
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -155,7 +157,7 @@ func TestGitManager_ListMergeRequests_FilterByWorkflowRunID(t *testing.T) {
 
 func TestGitManager_CloseMergeRequest_TransitionsToClosed(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -172,8 +174,8 @@ func TestGitManager_CloseMergeRequest_TransitionsToClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CloseMergeRequest: %v", err)
 	}
-	if closed.Status != MergeRequestStatusClosed {
-		t.Errorf("closed.Status = %q, want %q", closed.Status, MergeRequestStatusClosed)
+	if closed.Status != models.MergeRequestStatusClosed {
+		t.Errorf("closed.Status = %q, want %q", closed.Status, models.MergeRequestStatusClosed)
 	}
 
 	if _, err := m.CloseMergeRequest(ctx, mr.ID); !errors.Is(err, ErrMergeRequestNotOpen) {
@@ -185,7 +187,7 @@ func TestGitManager_CloseMergeRequest_TransitionsToClosed(t *testing.T) {
 // the event side of an operation the fake-DataManager tests otherwise only
 // check via return values.
 func TestGitManager_Publisher(t *testing.T) {
-	m, pub := newTestManagerWithPublisher()
+	m, pub := newTestManagerWithPublisher(t)
 
 	if _, err := m.InitRepo(context.Background(), CreateRepoRequest{Name: "test-repo"}); err != nil {
 		t.Fatalf("InitRepo: %v", err)

@@ -10,7 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // TestGIT011_ConcurrentMerges verifies that two goroutines merging different
@@ -18,7 +19,7 @@ import (
 // in-process mutexLocker serialises the two advance-head calls.
 func TestGIT011_ConcurrentMerges(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -61,7 +62,7 @@ func TestGIT011_ConcurrentMerges(t *testing.T) {
 // branch tip pointing at only the last writer's commit — losing the rest.
 func TestBUG09020_ConcurrentWriteFilesAllLand(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -115,7 +116,7 @@ func TestGIT011_MergeLockRespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	m := newTestManager()
+	m := newTestManager(t)
 	repo, err := m.InitRepo(context.Background(), CreateRepoRequest{Name: "r"})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
@@ -137,25 +138,19 @@ func TestGIT011_MergeLockRespectsContextCancellation(t *testing.T) {
 // expectedHeadCommitID does not match the branch's current head_commit_id.
 func TestGIT011_AdvanceBranchHead_StaleHeadReturnsConflict(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	const actualHead = "commit-current"
 
-	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Branch",
-		Properties: map[string]any{"head_commit_id": actualHead},
-	})
-	if err != nil {
+	branchRow := gormstore.BranchToRow(models.Branch{Name: "stale-head", HeadCommitID: actualHead})
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
-	commitEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Commit",
-		Properties: map[string]any{"sha": "abc123"},
-	})
-	if err != nil {
+	commitRow := gormstore.CommitToRow(models.Commit{SHA: "abc123"})
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 
-	_, err = m.advanceBranchHead(ctx, branchEntity.ID, commitEntity.ID, "commit-stale")
+	_, err := m.advanceBranchHead(ctx, branchRow.ID, commitRow.ID, "commit-stale")
 	if !errors.Is(err, ErrMergeConcurrencyConflict) {
 		t.Fatalf("expected ErrMergeConcurrencyConflict, got %v", err)
 	}
@@ -166,25 +161,19 @@ func TestGIT011_AdvanceBranchHead_StaleHeadReturnsConflict(t *testing.T) {
 // the branch's current head_commit_id.
 func TestGIT011_AdvanceBranchHead_MatchingHeadSucceeds(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 	const currentHead = "commit-current2"
 
-	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Branch",
-		Properties: map[string]any{"head_commit_id": currentHead},
-	})
-	if err != nil {
+	branchRow := gormstore.BranchToRow(models.Branch{Name: "matching-head", HeadCommitID: currentHead})
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
-	commitEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "Commit",
-		Properties: map[string]any{"sha": "def456"},
-	})
-	if err != nil {
+	commitRow := gormstore.CommitToRow(models.Commit{SHA: "def456"})
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 
-	if _, err := m.advanceBranchHead(ctx, branchEntity.ID, commitEntity.ID, currentHead); err != nil {
+	if _, err := m.advanceBranchHead(ctx, branchRow.ID, commitRow.ID, currentHead); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 }

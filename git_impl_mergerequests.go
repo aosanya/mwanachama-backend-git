@@ -2,88 +2,72 @@
 //
 // A MergeRequest is the durable record of a request to merge a source branch
 // into a target branch. The actual merge work is delegated to MergeBranch;
-// this layer adds lifecycle (open → merged | closed | failed), workflow_run_id
+// this layer adds lifecycle (open -> merged | closed | failed), workflow_run_id
 // propagation, and the git.merge.* event topics required by FEAT-20260602-001.
 package mwanachamagit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"gorm.io/gorm"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // CreateMergeRequest opens a new MergeRequest for the given source branch.
 // Publishes [TopicMergeRequested] on success.
-func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequestRequest) (MergeRequest, error) {
+func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequestRequest) (models.MergeRequest, error) {
 	if req.Title == "" {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: title is required")
+		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: title is required")
 	}
 	if req.SourceBranchID == "" {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: source_branch_id is required")
+		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: source_branch_id is required")
 	}
 	repo, err := m.GetRepository(ctx, req.RepositoryID)
 	if err != nil {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: %w", err)
+		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: %w", err)
 	}
 	source, err := m.GetBranch(ctx, req.SourceBranchID)
 	if err != nil {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: source branch: %w", err)
+		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: source branch: %w", err)
 	}
 
-	// Resolve target branch; default to repo default branch when unspecified.
-	var target Branch
+	var target models.Branch
 	if req.TargetBranchID != "" {
 		target, err = m.GetBranch(ctx, req.TargetBranchID)
 		if err != nil {
-			return MergeRequest{}, fmt.Errorf("CreateMergeRequest: target branch: %w", err)
+			return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: target branch: %w", err)
 		}
 	} else {
 		target, err = m.defaultBranch(ctx, repo.ID)
 		if err != nil {
-			return MergeRequest{}, fmt.Errorf("CreateMergeRequest: default branch: %w", err)
+			return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: default branch: %w", err)
 		}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	props := map[string]any{
-		"title":              req.Title,
-		"description":        req.Description,
-		"source_branch_id":   source.ID,
-		"source_branch_name": source.Name,
-		"target_branch_id":   target.ID,
-		"target_branch_name": target.Name,
-		"status":             MergeRequestStatusOpen,
-		"author_name":        req.AuthorName,
-		"workflow_run_id":    req.WorkflowRunID,
-		"created_at":         now,
-		"updated_at":         now,
-	}
-	entity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID:     "MergeRequest",
-		Properties: props,
-		Relationships: []entitygraph.EntityRelationshipRequest{
-			{Name: "belongs_to_repository", ToID: repo.ID},
-			{Name: "has_source_branch", ToID: source.ID},
-			{Name: "has_target_branch", ToID: target.ID},
-		},
+	now := models.NowRFC3339()
+	row := gormstore.MergeRequestToRow(models.MergeRequest{
+		Title:            req.Title,
+		Description:      req.Description,
+		SourceBranchID:   source.ID,
+		SourceBranchName: source.Name,
+		TargetBranchID:   target.ID,
+		TargetBranchName: target.Name,
+		Status:           models.MergeRequestStatusOpen,
+		AuthorName:       req.AuthorName,
+		WorkflowRunID:    req.WorkflowRunID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	})
-	if err != nil {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: create entity: %w", err)
+	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+	if err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).Create(&row).Error; err != nil {
+		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: create: %w", err)
 	}
 
-	// Forward has_merge_request edge (repo → MR) so listMergeRequestsByRepo
-	// can locate it without traversing the reverse direction.
-	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		Name:   "has_merge_request",
-		FromID: repo.ID,
-		ToID:   entity.ID,
-	}); relErr != nil {
-		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: link has_merge_request: %w", relErr)
-	}
-
-	mr := entityToMergeRequest(entity, repo.ID)
+	mr := gormstore.MergeRequestFromRow(row)
 	m.publish(ctx, TopicMergeRequested, MergeRequestRequestedPayload{
 		MergeRequestID: mr.ID,
 		RepoID:         repo.ID,
@@ -96,63 +80,59 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 }
 
 // GetMergeRequest retrieves a MergeRequest by ID.
-func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error) {
-	e, err := m.dm.GetEntity(ctx, mrID)
+func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error) {
+	var row gormstore.MergeRequestRow
+	err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).
+		Where("id = ? AND NOT deleted", mrID).First(&row).Error
 	if err != nil {
-		return MergeRequest{}, ErrMergeRequestNotFound
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return models.MergeRequest{}, ErrMergeRequestNotFound
+		}
+		return models.MergeRequest{}, fmt.Errorf("GetMergeRequest: %w", err)
 	}
-	if e.TypeID != "MergeRequest" {
-		return MergeRequest{}, ErrMergeRequestNotFound
-	}
-	repoID := m.resolveParentID(ctx, mrID, "belongs_to_repository")
-	return entityToMergeRequest(e, repoID), nil
+	return gormstore.MergeRequestFromRow(row), nil
 }
 
 // ListMergeRequests returns MRs matching the filter. An empty filter returns
-// every MR.
-func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]MergeRequest, error) {
-	var entities []entitygraph.Entity
-	var err error
+// every MR. Unlike the entitygraph era (which had to list every repository
+// and concatenate their MRs, since there was no cross-repository "list all"
+// query), this is a single filtered SELECT.
+func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]models.MergeRequest, error) {
+	q := m.db.WithContext(ctx).Table(m.tables.MergeRequests).Where("NOT deleted")
 	if filter.RepositoryID != "" {
-		entities, err = m.listMergeRequestsByRepo(ctx, filter.RepositoryID)
-	} else {
-		entities, err = m.listAllMergeRequests(ctx)
+		q = q.Where("repository_id = ?", filter.RepositoryID)
 	}
-	if err != nil {
+	if filter.Status != "" {
+		q = q.Where("status = ?", filter.Status)
+	}
+	if filter.WorkflowRunID != "" {
+		q = q.Where("workflow_run_id = ?", filter.WorkflowRunID)
+	}
+	var rows []gormstore.MergeRequestRow
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListMergeRequests: %w", err)
 	}
-
-	out := make([]MergeRequest, 0, len(entities))
-	for _, e := range entities {
-		if filter.Status != "" && entitygraph.StringProp(e.Properties, "status") != filter.Status {
-			continue
-		}
-		if filter.WorkflowRunID != "" && entitygraph.StringProp(e.Properties, "workflow_run_id") != filter.WorkflowRunID {
-			continue
-		}
-		repoID := filter.RepositoryID
-		if repoID == "" {
-			repoID = m.resolveParentID(ctx, e.ID, "belongs_to_repository")
-		}
-		out = append(out, entityToMergeRequest(e, repoID))
+	out := make([]models.MergeRequest, len(rows))
+	for i, r := range rows {
+		out[i] = gormstore.MergeRequestFromRow(r)
 	}
 	return out, nil
 }
 
 // CompleteMergeRequest performs the merge and transitions the MR to "merged".
 // On failure transitions to "failed" and publishes [TopicMergeFailed].
-func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (MergeRequest, error) {
+func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error) {
 	mr, err := m.GetMergeRequest(ctx, mrID)
 	if err != nil {
-		return MergeRequest{}, err
+		return models.MergeRequest{}, err
 	}
-	if mr.Status != MergeRequestStatusOpen {
-		return MergeRequest{}, ErrMergeRequestNotOpen
+	if mr.Status != models.MergeRequestStatusOpen {
+		return models.MergeRequest{}, ErrMergeRequestNotOpen
 	}
 
 	mergedBranch, mergeErr := m.MergeBranch(ctx, mr.SourceBranchID)
 	if mergeErr != nil {
-		updated, _ := m.transitionMRStatus(ctx, mr.ID, MergeRequestStatusFailed, "", mergeErr.Error())
+		updated, _ := m.transitionMRStatus(ctx, mr.ID, models.MergeRequestStatusFailed, "", mergeErr.Error())
 		m.publish(ctx, TopicMergeFailed, MergeRequestFailedPayload{
 			MergeRequestID: mr.ID,
 			RepoID:         mr.RepositoryID,
@@ -166,7 +146,7 @@ func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (Mer
 		return updated, fmt.Errorf("CompleteMergeRequest: %w", mergeErr)
 	}
 
-	updated, err := m.transitionMRStatus(ctx, mr.ID, MergeRequestStatusMerged, mergedBranch.SHA, "")
+	updated, err := m.transitionMRStatus(ctx, mr.ID, models.MergeRequestStatusMerged, mergedBranch.SHA, "")
 	if err != nil {
 		return mr, fmt.Errorf("CompleteMergeRequest: persist merged status: %w", err)
 	}
@@ -182,15 +162,15 @@ func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (Mer
 }
 
 // CloseMergeRequest transitions an open MR to "closed" without merging.
-func (m *gitManager) CloseMergeRequest(ctx context.Context, mrID string) (MergeRequest, error) {
+func (m *gitManager) CloseMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error) {
 	mr, err := m.GetMergeRequest(ctx, mrID)
 	if err != nil {
-		return MergeRequest{}, err
+		return models.MergeRequest{}, err
 	}
-	if mr.Status != MergeRequestStatusOpen {
-		return MergeRequest{}, ErrMergeRequestNotOpen
+	if mr.Status != models.MergeRequestStatusOpen {
+		return models.MergeRequest{}, ErrMergeRequestNotOpen
 	}
-	updated, err := m.transitionMRStatus(ctx, mr.ID, MergeRequestStatusClosed, "", "")
+	updated, err := m.transitionMRStatus(ctx, mr.ID, models.MergeRequestStatusClosed, "", "")
 	if err != nil {
 		return mr, fmt.Errorf("CloseMergeRequest: %w", err)
 	}
@@ -200,86 +180,21 @@ func (m *gitManager) CloseMergeRequest(ctx context.Context, mrID string) (MergeR
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // transitionMRStatus updates status, merged_commit_sha, error_message, and
-// updated_at on the MR entity and returns the re-read [MergeRequest].
-func (m *gitManager) transitionMRStatus(ctx context.Context, mrID, status, mergedSHA, errMsg string) (MergeRequest, error) {
-	props := map[string]any{
+// updated_at on the MR row and returns the re-read [models.MergeRequest].
+func (m *gitManager) transitionMRStatus(ctx context.Context, mrID, status, mergedSHA, errMsg string) (models.MergeRequest, error) {
+	updates := map[string]any{
 		"status":     status,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"updated_at": models.NowRFC3339(),
 	}
 	if mergedSHA != "" {
-		props["merged_commit_sha"] = mergedSHA
+		updates["merged_commit_sha"] = mergedSHA
 	}
 	if errMsg != "" {
-		props["error_message"] = errMsg
+		updates["error_message"] = errMsg
 	}
-	entity, err := m.dm.UpdateEntity(ctx, mrID, entitygraph.UpdateEntityRequest{
-		Properties: props,
-	})
-	if err != nil {
-		return MergeRequest{}, err
+	if err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).
+		Where("id = ?", mrID).Updates(updates).Error; err != nil {
+		return models.MergeRequest{}, err
 	}
-	repoID := m.resolveParentID(ctx, mrID, "belongs_to_repository")
-	return entityToMergeRequest(entity, repoID), nil
-}
-
-// listMergeRequestsByRepo returns all MR entities linked to the given repository.
-func (m *gitManager) listMergeRequestsByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name:   "has_merge_request",
-		FromID: repositoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]entitygraph.Entity, 0, len(rels))
-	for _, r := range rels {
-		e, err := m.dm.GetEntity(ctx, r.ToID)
-		if err != nil {
-			continue // skip soft-deleted MRs
-		}
-		out = append(out, e)
-	}
-	return out, nil
-}
-
-// listAllMergeRequests returns every MR entity by listing all repositories
-// first and concatenating their MRs. The has_merge_request edge
-// is keyed by FromID, so a per-repo loop is the natural traversal.
-func (m *gitManager) listAllMergeRequests(ctx context.Context) ([]entitygraph.Entity, error) {
-	repos, err := m.listRepositories(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []entitygraph.Entity
-	for _, repo := range repos {
-		repoMRs, err := m.listMergeRequestsByRepo(ctx, repo.ID)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, repoMRs...)
-	}
-	return out, nil
-}
-
-// entityToMergeRequest maps an entitygraph.Entity of type "MergeRequest" to
-// [MergeRequest].
-func entityToMergeRequest(e entitygraph.Entity, repositoryID string) MergeRequest {
-	p := e.Properties
-	return MergeRequest{
-		ID:               e.ID,
-		RepositoryID:     repositoryID,
-		Title:            entitygraph.StringProp(p, "title"),
-		Description:      entitygraph.StringProp(p, "description"),
-		SourceBranchID:   entitygraph.StringProp(p, "source_branch_id"),
-		SourceBranchName: entitygraph.StringProp(p, "source_branch_name"),
-		TargetBranchID:   entitygraph.StringProp(p, "target_branch_id"),
-		TargetBranchName: entitygraph.StringProp(p, "target_branch_name"),
-		Status:           entitygraph.StringProp(p, "status"),
-		MergedCommitSHA:  entitygraph.StringProp(p, "merged_commit_sha"),
-		AuthorName:       entitygraph.StringProp(p, "author_name"),
-		ErrorMessage:     entitygraph.StringProp(p, "error_message"),
-		WorkflowRunID:    entitygraph.StringProp(p, "workflow_run_id"),
-		CreatedAt:        entitygraph.StringProp(p, "created_at"),
-		UpdatedAt:        entitygraph.StringProp(p, "updated_at"),
-	}
+	return m.GetMergeRequest(ctx, mrID)
 }

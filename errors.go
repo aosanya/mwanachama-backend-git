@@ -116,3 +116,11 @@ var ErrMergeRequestNotOpen = errors.New("merge request is not open")
 // when the workflow_run_id argument is empty. A blank ID would match every
 // branch/MR that has no run context — a footgun the manager refuses to fire.
 var ErrWorkflowRunIDRequired = errors.New("workflow_run_id is required")
+
+// ── Graph query errors (GIT-020) ─────────────────────────────────────────────
+
+// ErrEntityNotFound is returned by [GitManager.GetNeighborhood] when
+// entityID does not resolve to any row across the nine node tables. Replaces
+// entitygraph.ErrEntityNotFound, which no longer exists once storage moved
+// off entitygraph — see [gormstore.ResolveNodeType].
+var ErrEntityNotFound = errors.New("entity not found")

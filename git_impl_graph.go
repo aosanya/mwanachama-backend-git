@@ -1,36 +1,32 @@
 // git_impl_graph.go implements the graph query methods on [gitManager]:
 //
-//   - [GitManager.GetNeighborhood] — recursive-CTE-backed traversal returning
-//     a bounded subgraph (depth 1-3, 100-node hard cap).
+//   - [GitManager.GetNeighborhood] — bounded subgraph traversal (depth 1-3,
+//     100-node hard cap) over the closed catalogue of sixteen relationship
+//     shapes the flattened schema can express (see gormstore.NeighborhoodEdges).
 //
-//   - [GitManager.SearchByKeywords] — keyword-driven entity discovery with
+//   - [GitManager.SearchByKeywords] — keyword-driven Blob discovery with
 //     optional taxonomy cascade and AND/OR match modes.
 //
 //   - [GitManager.QueryGraph] — multi-filter, signal-sorted Blob graph query.
 //
-// All methods delegate to [entitygraph.DataManager] — no direct storage
-// queries are issued from this layer.
+// These three methods are the ones most affected by the entitygraph->GORM
+// migration: entitygraph's generic, any-type/any-direction relationships
+// table is gone, replaced by an enumerated set of typed FK columns and join
+// tables. See this repo's CLAUDE.md for what that costs (no generic "walk
+// any edge from any entity" capability survives) and what stays possible
+// (every edge shape declared in the old schema.go is still traversable).
 package mwanachamagit
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
-)
+	"gorm.io/gorm"
 
-// defaultSignalLayers maps the built-in signal names to their rank.
-// Used when no Signal entities have been persisted to the store yet.
-var defaultSignalLayers = map[string]int{
-	"surface":     1,
-	"index":       2,
-	"structural":  3,
-	"contributor": 4,
-	"authority":   5,
-}
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+)
 
 const queryGraphDefaultLimit = 50
 
@@ -55,101 +51,58 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 	depth = clampDepth(depth)
 
 	// Resolve entityID: callers may pass a file path (e.g. "README.md") instead
-	// of the actual entity graph ID. Try the raw ID first; on ErrEntityNotFound
-	// fall back to a Blob lookup by path property.
+	// of the actual row ID. Try the raw ID first; on not-found fall back to a
+	// Blob lookup by path.
 	resolvedID, err := m.resolveEntityID(ctx, entityID)
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: resolve entity: %w", entityID, err)
 	}
 
-	result, err := m.traverseNeighborhood(ctx, resolvedID, depth)
+	order, edges, err := m.traverseNeighborhood(ctx, resolvedID, depth)
 	if err != nil {
-		if errors.Is(err, entitygraph.ErrEntityNotFound) {
-			return GraphResult{}, entitygraph.ErrEntityNotFound
-		}
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: traverse: %w", entityID, err)
 	}
 
-	return buildGraphResult(result, neighborhoodMaxNodes), nil
-}
+	nodes, err := m.hydrateNodes(ctx, order)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: hydrate: %w", entityID, err)
+	}
 
-// neighborhoodTraversal carries the raw vertices and edges collected by
-// [gitManager.traverseNeighborhood], before [buildGraphResult] applies the
-// node cap and filters edges down to the included vertices.
-type neighborhoodTraversal struct {
-	Vertices []entitygraph.Entity
-	Edges    []entitygraph.Relationship
+	return buildGraphResult(nodes, edges, neighborhoodMaxNodes), nil
 }
 
 // traverseNeighborhood performs a bounded breadth-first walk from startID,
 // following relationships in either direction, up to depth hops or
-// [neighborhoodMaxNodes] visited vertices, whichever comes first.
+// [neighborhoodMaxNodes] visited vertices, whichever comes first. Returns
+// vertex IDs in discovery order (startID first) and the deduplicated edge
+// set touching them.
 //
-// This replaces the single recursive-CTE query the Postgres DataManager used
-// to run server-side (entitygraph.TraverseGraph, removed from the interface
-// as part of retiring per-agency scoping): DataManager only exposes
-// ListRelationships/GetEntity now, so the traversal is driven from here
-// instead, level by level. Concretely this means:
-//   - Cost is O(frontier size × levels) round trips to the store (two
-//     ListRelationships calls — one by FromID, one by ToID — per frontier
-//     vertex per level, since "any" direction has no single-filter
-//     equivalent) rather than one server-side query. For the depth-1..3,
-//     100-node-capped shape GetNeighborhood is bounded to, this is a small,
-//     fixed number of round trips, not a scalability concern in practice.
-//   - A vertex whose edge was collected but who is then found to be
-//     soft-deleted (or hard gone) by the time GetEntity runs is dropped from
-//     the result rather than surfacing an error — the same
-//     entity-deleted-after-edge-was-created race the recursive CTE version
-//     could hit too, just now handled in application code instead of SQL.
-func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, depth int) (neighborhoodTraversal, error) {
-	start, err := m.dm.GetEntity(ctx, startID)
-	if err != nil {
-		return neighborhoodTraversal{}, err
-	}
-
+// One [gormstore.NeighborhoodEdges] query covers the ENTIRE frontier per
+// level (not one query per frontier vertex), so every frontier member's own
+// edges are always collected regardless of whether the node cap fills up
+// mid-round — the cap only gates whether a newly-discovered neighbor is
+// admitted into the visited set, never whether a query runs.
+func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, depth int) ([]string, []GraphEdge, error) {
 	visited := map[string]bool{startID: true}
-	order := []string{startID} // discovery order, oldest (closest) first
+	order := []string{startID}
 	seenEdges := map[string]bool{}
-	var edges []entitygraph.Relationship
+	var edges []GraphEdge
 	frontier := []string{startID}
 
 	for level := 0; level < depth && len(frontier) > 0 && len(visited) < neighborhoodMaxNodes; level++ {
+		rawEdges, err := gormstore.NeighborhoodEdges(m.db.WithContext(ctx), m.tables, frontier)
+		if err != nil {
+			return nil, nil, fmt.Errorf("traverseNeighborhood: level %d: %w", level, err)
+		}
 		var next []string
-		for _, id := range frontier {
-			// Deliberately no early exit here when the cap is already full:
-			// every id in this round's frontier was already admitted into
-			// visited (in a prior round), so it's already part of the
-			// returned vertex set. Its own edges — including ones to other
-			// already-visited nodes discoverable only from its own
-			// ListRelationships calls — must still be collected, or the
-			// result would contain two included nodes with a real edge
-			// between them but no edge record (the old TraverseGraph-CTE
-			// version fetched the full depth-bounded subgraph before
-			// truncating, so it never had this gap). The node cap itself is
-			// still enforced below, when deciding whether to admit a new
-			// neighbor; only the "should we bother querying this
-			// already-included id" cutoff is removed. The outer loop
-			// condition above still stops any further round from starting
-			// once the cap is full, so cost stays bounded to at most depth
-			// rounds over an at-most-neighborhoodMaxNodes-sized frontier.
-			outRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{FromID: id})
-			if err != nil {
-				return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: list outbound from %s: %w", id, err)
+		for _, re := range rawEdges {
+			key := re.Name + ":" + re.FromID + ":" + re.ToID
+			if !seenEdges[key] {
+				seenEdges[key] = true
+				edges = append(edges, GraphEdge{ID: key, Name: re.Name, FromID: re.FromID, ToID: re.ToID})
 			}
-			inRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{ToID: id})
-			if err != nil {
-				return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: list inbound to %s: %w", id, err)
-			}
-			for _, rel := range append(outRels, inRels...) {
-				if !seenEdges[rel.ID] {
-					seenEdges[rel.ID] = true
-					edges = append(edges, rel)
-				}
-				neighborID := rel.ToID
-				if neighborID == id {
-					neighborID = rel.FromID
-				}
-				if visited[neighborID] || len(visited) >= neighborhoodMaxNodes {
+			for _, neighborID := range [2]string{re.FromID, re.ToID} {
+				if neighborID == "" || visited[neighborID] || len(visited) >= neighborhoodMaxNodes {
 					continue
 				}
 				visited[neighborID] = true
@@ -160,44 +113,30 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 		frontier = next
 	}
 
-	vertices := make([]entitygraph.Entity, 0, len(order))
-	vertices = append(vertices, start)
-	for _, id := range order[1:] {
-		e, err := m.dm.GetEntity(ctx, id)
-		if err != nil {
-			if errors.Is(err, entitygraph.ErrEntityNotFound) {
-				continue // entity was deleted after the edge referencing it was created
-			}
-			return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: get entity %s: %w", id, err)
-		}
-		vertices = append(vertices, e)
-	}
-
-	return neighborhoodTraversal{Vertices: vertices, Edges: edges}, nil
+	return order, edges, nil
 }
 
-// resolveEntityID returns the canonical entity graph ID. If entityID is already
-// a valid entity key it is returned as-is. Otherwise, the method attempts to
-// find a Blob entity whose "path" property matches entityID and returns that
-// entity's ID.
+// resolveEntityID returns the canonical row ID. If entityID already names a
+// row in one of the nine node tables it is returned as-is. Otherwise, the
+// method attempts to find a Blob row whose Path matches entityID.
+// Returns [ErrEntityNotFound] if neither resolves.
 func (m *gitManager) resolveEntityID(ctx context.Context, entityID string) (string, error) {
-	// Fast path: check if entityID is a direct entity key.
-	if _, err := m.dm.GetEntity(ctx, entityID); err == nil {
+	if _, found, err := gormstore.ResolveNodeType(m.db.WithContext(ctx), m.tables, entityID); err != nil {
+		return "", err
+	} else if found {
 		return entityID, nil
 	}
 
-	// Slow path: look up Blob by "path" property.
-	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID:     "Blob",
-		Properties: map[string]any{"path": entityID},
-	})
+	var row gormstore.BlobRow
+	err := m.db.WithContext(ctx).Table(m.tables.Blobs).
+		Where("path = ? AND NOT deleted", entityID).First(&row).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrEntityNotFound
+		}
 		return "", fmt.Errorf("resolveEntityID: list blobs by path %q: %w", entityID, err)
 	}
-	if len(entities) == 0 {
-		return "", entitygraph.ErrEntityNotFound
-	}
-	return entities[0].ID, nil
+	return row.ID, nil
 }
 
 // clampDepth enforces the range [1, 3] for traversal depth.
@@ -211,49 +150,156 @@ func clampDepth(d int) int {
 	return d
 }
 
-// buildGraphResult converts a [neighborhoodTraversal] to a [GraphResult],
-// applying the given node cap. Edges whose endpoints fall outside the cap
-// are dropped.
-func buildGraphResult(raw neighborhoodTraversal, cap int) GraphResult {
-	// Cap vertices first.
-	verts := raw.Vertices
-	if len(verts) > cap {
-		verts = verts[:cap]
+// buildGraphResult applies the node cap and drops edges whose endpoints fall
+// outside it.
+func buildGraphResult(nodes []GraphNode, edges []GraphEdge, cap int) GraphResult {
+	if len(nodes) > cap {
+		nodes = nodes[:cap]
 	}
-
-	// Build an ID set for fast membership checks on capped nodes.
-	included := make(map[string]bool, len(verts))
-	nodes := make([]GraphNode, 0, len(verts))
-	for _, v := range verts {
-		included[v.ID] = true
-		nodes = append(nodes, GraphNode{
-			ID:         v.ID,
-			TypeID:     v.TypeID,
-			Properties: v.Properties,
-		})
+	included := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		included[n.ID] = true
 	}
-
-	// Include only edges whose both endpoints are within the node cap.
-	edges := make([]GraphEdge, 0, len(raw.Edges))
-	for _, e := range raw.Edges {
+	filtered := make([]GraphEdge, 0, len(edges))
+	for _, e := range edges {
 		if included[e.FromID] && included[e.ToID] {
-			edges = append(edges, GraphEdge{
-				ID:     e.ID,
-				Name:   e.Name,
-				FromID: e.FromID,
-				ToID:   e.ToID,
-			})
+			filtered = append(filtered, e)
 		}
 	}
+	return GraphResult{Nodes: nodes, Edges: filtered}
+}
 
-	return GraphResult{Nodes: nodes, Edges: edges}
+// hydrateNodes fetches full row data for ids across all nine node tables and
+// returns them as [GraphNode]s in the same order as ids — a row missing by
+// the time hydration runs (e.g. deleted between the edge scan and here) is
+// silently dropped, matching the entitygraph-era race behavior.
+func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNode, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	byID := make(map[string]GraphNode, len(ids))
+	db := m.db.WithContext(ctx)
+
+	var agencies []gormstore.AgencyRow
+	if err := db.Table(m.tables.Agencies).Where("id IN ? AND NOT deleted", ids).Find(&agencies).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range agencies {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Agency", Properties: map[string]any{
+			"name": r.Name, "description": r.Description, "created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		}}
+	}
+
+	var repos []gormstore.RepositoryRow
+	if err := db.Table(m.tables.Repositories).Where("id IN ? AND NOT deleted", ids).Find(&repos).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range repos {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Repository", Properties: map[string]any{
+			"name": r.Name, "description": r.Description, "default_branch": r.DefaultBranch,
+			"source_url": r.SourceURL, "created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		}}
+	}
+
+	var branches []gormstore.BranchRow
+	if err := db.Table(m.tables.Branches).Where("id IN ? AND NOT deleted", ids).Find(&branches).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range branches {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Branch", Properties: map[string]any{
+			"name": r.Name, "is_default": r.IsDefault, "sha": r.SHA, "status": r.Status,
+			"workflow_run_id": r.WorkflowRunID, "created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		}}
+	}
+
+	var mrs []gormstore.MergeRequestRow
+	if err := db.Table(m.tables.MergeRequests).Where("id IN ? AND NOT deleted", ids).Find(&mrs).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range mrs {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "MergeRequest", Properties: map[string]any{
+			"title": r.Title, "status": r.Status, "merged_commit_sha": r.MergedCommitSHA,
+			"created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		}}
+	}
+
+	var tags []gormstore.TagRow
+	if err := db.Table(m.tables.Tags).Where("id IN ? AND NOT deleted", ids).Find(&tags).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range tags {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Tag", Properties: map[string]any{
+			"name": r.Name, "sha": r.SHA, "message": r.Message, "created_at": r.CreatedAt,
+		}}
+	}
+
+	var commits []gormstore.CommitRow
+	if err := db.Table(m.tables.Commits).Where("id IN ? AND NOT deleted", ids).Find(&commits).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range commits {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Commit", Properties: map[string]any{
+			"sha": r.SHA, "message": r.Message, "author_name": r.AuthorName,
+			"committed_at": r.CommittedAt, "created_at": r.CreatedAt,
+		}}
+	}
+
+	var trees []gormstore.TreeRow
+	if err := db.Table(m.tables.Trees).Where("id IN ? AND NOT deleted", ids).Find(&trees).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range trees {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Tree", Properties: map[string]any{
+			"sha": r.SHA, "path": r.Path, "created_at": r.CreatedAt,
+		}}
+	}
+
+	var blobs []gormstore.BlobRow
+	if err := db.Table(m.tables.Blobs).Where("id IN ? AND NOT deleted", ids).Find(&blobs).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range blobs {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r)}
+	}
+
+	var keywords []gormstore.KeywordRow
+	if err := db.Table(m.tables.Keywords).Where("id IN ? AND NOT deleted", ids).Find(&keywords).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range keywords {
+		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Keyword", Properties: map[string]any{
+			"name": r.Name, "description": r.Description, "scope": r.Scope,
+			"created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+		}}
+	}
+
+	out := make([]GraphNode, 0, len(ids))
+	for _, id := range ids {
+		if n, ok := byID[id]; ok {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// blobProps builds the property map for a Blob row, matching the
+// entitygraph-era JSONB key set.
+func blobProps(r gormstore.BlobRow) map[string]any {
+	return map[string]any{
+		"sha": r.SHA, "path": r.Path, "name": r.Name, "extension": r.Extension,
+		"size": r.Size, "encoding": r.Encoding, "content": r.Content, "created_at": r.CreatedAt,
+	}
 }
 
 // ── SearchByKeywords ──────────────────────────────────────────────────────────
 
-// SearchByKeywords returns all entities tagged (via "tagged_with" edges) with
+// SearchByKeywords returns all Blob rows tagged (via tagged_with rows) with
 // the specified keywords. When Cascade is true each keyword is expanded to its
 // full descendant set before matching. MatchMode controls AND/OR semantics.
+//
+// Result nodes are formally all-Blob — matching what "tagged_with" edges
+// have always pointed at in practice, now made explicit by the flattened
+// schema (see this repo's CLAUDE.md).
 func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsRequest) (GraphResult, error) {
 	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
@@ -271,32 +317,20 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 		mode = KeywordMatchModeOR
 	}
 
-	// Expand each keyword to its descendant set when cascade is requested.
-	expandedSets := make([]map[string]bool, len(req.Keywords))
+	taggedPerSet := make([]map[string]bool, len(req.Keywords))
 	for i, kwID := range req.Keywords {
-		set, err := m.expandKeyword(ctx, kwID, req.Cascade)
+		set, err := m.taggedBlobsForKeyword(ctx, kwID, req.Cascade)
 		if err != nil {
 			return GraphResult{}, fmt.Errorf("SearchByKeywords: expand keyword %s: %w", kwID, err)
 		}
-		expandedSets[i] = set
+		taggedPerSet[i] = set
 	}
 
-	// For each expanded keyword set, collect entities tagged with any keyword in the set.
-	taggedPerSet := make([]map[string]bool, len(expandedSets))
-	for i, kwSet := range expandedSets {
-		tagged, err := m.entitiesTaggedWith(ctx, kwSet)
-		if err != nil {
-			return GraphResult{}, fmt.Errorf("SearchByKeywords: collect tagged entities: %w", err)
-		}
-		taggedPerSet[i] = tagged
-	}
-
-	// Merge according to match mode.
 	var matchedIDs map[string]bool
 	switch mode {
 	case KeywordMatchModeAND:
 		matchedIDs = intersectSets(taggedPerSet)
-	default: // OR
+	default:
 		matchedIDs = unionSets(taggedPerSet)
 	}
 
@@ -304,22 +338,22 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 		return GraphResult{Nodes: []GraphNode{}, Edges: []GraphEdge{}}, nil
 	}
 
-	// Fetch full entity details for each matched ID and build the result.
-	nodes := make([]GraphNode, 0, len(matchedIDs))
-	for entityID := range matchedIDs {
-		e, err := m.dm.GetEntity(ctx, entityID)
-		if err != nil {
-			continue // skip entities that have been soft-deleted since the edge scan
-		}
-		nodes = append(nodes, GraphNode{
-			ID:         e.ID,
-			TypeID:     e.TypeID,
-			Properties: e.Properties,
-		})
+	ids := make([]string, 0, len(matchedIDs))
+	for id := range matchedIDs {
+		ids = append(ids, id)
 	}
 
-	// Collect edges between matched entities.
-	edges, err := m.edgesBetween(ctx, matchedIDs)
+	var rows []gormstore.BlobRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).
+		Where("id IN ? AND NOT deleted", ids).Find(&rows).Error; err != nil {
+		return GraphResult{}, fmt.Errorf("SearchByKeywords: fetch blobs: %w", err)
+	}
+	nodes := make([]GraphNode, len(rows))
+	for i, r := range rows {
+		nodes[i] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r)}
+	}
+
+	edges, err := m.edgesBetweenBlobs(ctx, matchedIDs)
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("SearchByKeywords: edges between results: %w", err)
 	}
@@ -327,88 +361,46 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 	return GraphResult{Nodes: nodes, Edges: edges}, nil
 }
 
-// expandKeyword returns a set containing kwID and, when cascade is true, all
-// of its descendant keyword IDs.
-func (m *gitManager) expandKeyword(ctx context.Context, kwID string, cascade bool) (map[string]bool, error) {
-	set := map[string]bool{kwID: true}
-	if !cascade {
-		return set, nil
+// taggedBlobsForKeyword returns the set of blob IDs tagged with kwID (and, if
+// cascade, any of its descendants). The cascade expansion is a recursive CTE
+// ([gormstore.KeywordDescendantIDs]) replacing the old collectDescendants
+// Go-side recursive walk.
+func (m *gitManager) taggedBlobsForKeyword(ctx context.Context, kwID string, cascade bool) (map[string]bool, error) {
+	kwIDs := []string{kwID}
+	if cascade {
+		descendants, err := gormstore.KeywordDescendantIDs(m.db.WithContext(ctx), m.tables, kwID)
+		if err != nil {
+			return nil, err
+		}
+		kwIDs = append(kwIDs, descendants...)
 	}
-	if err := m.collectDescendants(ctx, kwID, set); err != nil {
+	var blobIDs []string
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
+		Where("keyword_id IN ?", kwIDs).Distinct().Pluck("blob_id", &blobIDs).Error; err != nil {
 		return nil, err
+	}
+	set := make(map[string]bool, len(blobIDs))
+	for _, id := range blobIDs {
+		set[id] = true
 	}
 	return set, nil
 }
 
-// collectDescendants recursively collects all descendant keyword IDs of parent
-// into the accumulator set, following has_child edges.
-func (m *gitManager) collectDescendants(ctx context.Context, parentID string, acc map[string]bool) error {
-	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		FromID: parentID,
-		Name:   "has_child",
-	})
-	if err != nil {
-		return fmt.Errorf("collectDescendants %s: %w", parentID, err)
+// edgesBetweenBlobs returns every blob_references row whose endpoints are
+// both in ids.
+func (m *gitManager) edgesBetweenBlobs(ctx context.Context, ids map[string]bool) ([]GraphEdge, error) {
+	idList := make([]string, 0, len(ids))
+	for id := range ids {
+		idList = append(idList, id)
 	}
-	for _, rel := range rels {
-		if acc[rel.ToID] {
-			continue // guard against cycles (taxonomy should be a DAG, but be safe)
-		}
-		acc[rel.ToID] = true
-		if err := m.collectDescendants(ctx, rel.ToID, acc); err != nil {
-			return err
-		}
+	var rows []gormstore.BlobReferenceRow
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
+		Where("from_blob_id IN ? AND to_blob_id IN ?", idList, idList).Find(&rows).Error; err != nil {
+		return nil, err
 	}
-	return nil
-}
-
-// entitiesTaggedWith returns the set of entity IDs that have a "tagged_with"
-// edge whose ToID is in the given keyword set.
-func (m *gitManager) entitiesTaggedWith(ctx context.Context, kwSet map[string]bool) (map[string]bool, error) {
-	result := make(map[string]bool)
-	for kwID := range kwSet {
-		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			ToID: kwID,
-			Name: "tagged_with",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("entitiesTaggedWith %s: %w", kwID, err)
-		}
-		for _, rel := range rels {
-			result[rel.FromID] = true
-		}
-	}
-	return result, nil
-}
-
-// edgesBetween returns all relationships where both FromID and ToID are members
-// of the given entity ID set.
-func (m *gitManager) edgesBetween(ctx context.Context, ids map[string]bool) ([]GraphEdge, error) {
-	var edges []GraphEdge
-	seen := make(map[string]bool) // deduplicate by relationship ID
-
-	for entityID := range ids {
-		// Outbound edges from this entity.
-		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			FromID: entityID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("edgesBetween %s: %w", entityID, err)
-		}
-		for _, rel := range rels {
-			if seen[rel.ID] {
-				continue
-			}
-			if ids[rel.ToID] {
-				seen[rel.ID] = true
-				edges = append(edges, GraphEdge{
-					ID:     rel.ID,
-					Name:   rel.Name,
-					FromID: rel.FromID,
-					ToID:   rel.ToID,
-				})
-			}
-		}
+	edges := make([]GraphEdge, len(rows))
+	for i, r := range rows {
+		edges[i] = GraphEdge{ID: r.Name + ":" + r.FromBlobID + ":" + r.ToBlobID, Name: r.Name, FromID: r.FromBlobID, ToID: r.ToBlobID}
 	}
 	return edges, nil
 }
@@ -426,249 +418,18 @@ func unionSets(sets []map[string]bool) map[string]bool {
 	return result
 }
 
-// ── QueryGraph ────────────────────────────────────────────────────────────────
-
-// QueryGraph returns up to req.Limit Blob nodes filtered across five dimensions
-// and sorted by descending signal layer. An empty request returns the top 50
-// highest-signal Blob nodes with all their inter-node edges.
-func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (GraphResult, error) {
-	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
-		if errors.Is(err, ErrBranchNotFound) {
-			return GraphResult{}, ErrBranchNotFound
-		}
-		return GraphResult{}, fmt.Errorf("QueryGraph: get branch: %w", err)
-	}
-
-	limit := req.Limit
-	if limit <= 0 {
-		limit = queryGraphDefaultLimit
-	}
-
-	signalLayers, err := m.loadSignalLayers(ctx)
-	if err != nil {
-		return GraphResult{}, fmt.Errorf("QueryGraph: load signals: %w", err)
-	}
-
-	blobs, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Blob",
-	})
-	if err != nil {
-		return GraphResult{}, fmt.Errorf("QueryGraph: list blobs: %w", err)
-	}
-	blobs = filterBlobsByPath(blobs, req.FileTypes, req.Folders)
-
-	tagEdges, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		Name: "tagged_with",
-	})
-	if err != nil {
-		return GraphResult{}, fmt.Errorf("QueryGraph: list tagged_with edges: %w", err)
-	}
-
-	type tagInfo struct {
-		keywordID string
-		signal    string
-	}
-	blobTags := make(map[string][]tagInfo, len(tagEdges))
-	for _, e := range tagEdges {
-		sig, _ := e.Properties["signal"].(string)
-		blobTags[e.FromID] = append(blobTags[e.FromID], tagInfo{keywordID: e.ToID, signal: sig})
-	}
-
-	signalSet := toStringSet(req.Signals)
-	kwSet := toStringSet(req.KeywordIDs)
-
-	type scored struct {
-		entity   entitygraph.Entity
-		maxLayer int
-	}
-	var candidates []scored
-	for _, blob := range blobs {
-		tags := blobTags[blob.ID]
-		if len(kwSet) > 0 {
-			found := false
-			for _, t := range tags {
-				if kwSet[t.keywordID] {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		maxLayer := 0
-		hasMatchingSignal := len(signalSet) == 0
-		for _, t := range tags {
-			if layer := signalLayers[t.signal]; layer > maxLayer {
-				maxLayer = layer
-			}
-			if signalSet[t.signal] {
-				hasMatchingSignal = true
-			}
-		}
-		if !hasMatchingSignal {
-			continue
-		}
-		candidates = append(candidates, scored{entity: blob, maxLayer: maxLayer})
-	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].maxLayer > candidates[j].maxLayer
-	})
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-
-	nodeIDs := make(map[string]bool, len(candidates))
-	nodes := make([]GraphNode, 0, len(candidates))
-	for _, c := range candidates {
-		nodeIDs[c.entity.ID] = true
-		nodes = append(nodes, GraphNode{
-			ID:         c.entity.ID,
-			TypeID:     c.entity.TypeID,
-			Properties: c.entity.Properties,
-		})
-	}
-
-	relSet := toStringSet(req.Relationships)
-	edges, err := m.queryGraphEdges(ctx, nodeIDs, relSet)
-	if err != nil {
-		return GraphResult{}, fmt.Errorf("QueryGraph: collect edges: %w", err)
-	}
-
-	return GraphResult{Nodes: nodes, Edges: edges}, nil
-}
-
-// loadSignalLayers lists Signal entities and returns a name→layer map.
-// Falls back to defaultSignalLayers when the store is empty.
-func (m *gitManager) loadSignalLayers(ctx context.Context) (map[string]int, error) {
-	signals, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		TypeID: "Signal",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("loadSignalLayers: %w", err)
-	}
-	if len(signals) == 0 {
-		return defaultSignalLayers, nil
-	}
-	layers := make(map[string]int, len(signals))
-	for _, s := range signals {
-		name, _ := s.Properties["name"].(string)
-		var layer int
-		switch v := s.Properties["layer"].(type) {
-		case int:
-			layer = v
-		case float64:
-			layer = int(v)
-		}
-		if name != "" {
-			layers[name] = layer
-		}
-	}
-	return layers, nil
-}
-
-// filterBlobsByPath applies file_types (suffix) and folders (prefix) filters
-// in-memory, returning only blobs whose path matches all active filters.
-func filterBlobsByPath(blobs []entitygraph.Entity, fileTypes, folders []string) []entitygraph.Entity {
-	if len(fileTypes) == 0 && len(folders) == 0 {
-		return blobs
-	}
-	out := blobs[:0]
-	for _, b := range blobs {
-		path, _ := b.Properties["path"].(string)
-		if len(fileTypes) > 0 {
-			matched := false
-			for _, ft := range fileTypes {
-				if strings.HasSuffix(path, ft) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-		if len(folders) > 0 {
-			matched := false
-			for _, f := range folders {
-				if strings.HasPrefix(path, f) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-		out = append(out, b)
-	}
-	return out
-}
-
-// queryGraphEdges collects all relationships between nodes in the given ID set,
-// filtered by relSet (edge name or descriptor property). An empty relSet passes
-// all edges through.
-func (m *gitManager) queryGraphEdges(ctx context.Context, nodeIDs map[string]bool, relSet map[string]bool) ([]GraphEdge, error) {
-	seen := make(map[string]bool)
-	var edges []GraphEdge
-	for nodeID := range nodeIDs {
-		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			FromID: nodeID,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("queryGraphEdges %s: %w", nodeID, err)
-		}
-		for _, rel := range rels {
-			if seen[rel.ID] || !nodeIDs[rel.ToID] {
-				continue
-			}
-			if len(relSet) > 0 {
-				descriptor, _ := rel.Properties["descriptor"].(string)
-				if !relSet[rel.Name] && !relSet[descriptor] {
-					continue
-				}
-			}
-			seen[rel.ID] = true
-			edges = append(edges, GraphEdge{
-				ID:     rel.ID,
-				Name:   rel.Name,
-				FromID: rel.FromID,
-				ToID:   rel.ToID,
-			})
-		}
-	}
-	return edges, nil
-}
-
-// toStringSet converts a slice to a set map for O(1) membership tests.
-func toStringSet(ss []string) map[string]bool {
-	if len(ss) == 0 {
-		return nil
-	}
-	set := make(map[string]bool, len(ss))
-	for _, s := range ss {
-		set[s] = true
-	}
-	return set
-}
-
-// ── Set helpers ───────────────────────────────────────────────────────────────
-
 // intersectSets returns the intersection of all sets in the slice.
 // An empty slice returns an empty map.
 func intersectSets(sets []map[string]bool) map[string]bool {
 	if len(sets) == 0 {
 		return map[string]bool{}
 	}
-	// Start with the smallest set to minimise iterations.
 	smallest := sets[0]
 	for _, s := range sets[1:] {
 		if len(s) < len(smallest) {
 			smallest = s
 		}
 	}
-
 	result := make(map[string]bool, len(smallest))
 	for k := range smallest {
 		inAll := true
@@ -683,4 +444,120 @@ func intersectSets(sets []map[string]bool) map[string]bool {
 		}
 	}
 	return result
+}
+
+// ── QueryGraph ────────────────────────────────────────────────────────────────
+
+// blobWithLayer is the destination shape for QueryGraph's aggregate query —
+// a Blob row plus its computed max signal layer.
+type blobWithLayer struct {
+	gormstore.BlobRow
+	MaxLayer int
+}
+
+// QueryGraph returns up to req.Limit Blob nodes filtered across five dimensions
+// and sorted by descending signal layer. An empty request returns the top 50
+// highest-signal Blob nodes with all their inter-node edges.
+//
+// Replaces the entitygraph-era "load every Blob + every tagged_with edge into
+// memory, then filter/sort in Go" body with one aggregate SQL query.
+func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (GraphResult, error) {
+	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
+		if errors.Is(err, ErrBranchNotFound) {
+			return GraphResult{}, ErrBranchNotFound
+		}
+		return GraphResult{}, fmt.Errorf("QueryGraph: get branch: %w", err)
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = queryGraphDefaultLimit
+	}
+
+	q := m.db.WithContext(ctx).Table(m.tables.Blobs+" AS b").
+		Select(`b.*, COALESCE(MAX(CASE t.signal ` +
+			`WHEN 'surface' THEN 1 WHEN 'index' THEN 2 WHEN 'structural' THEN 3 ` +
+			`WHEN 'contributor' THEN 4 WHEN 'authority' THEN 5 ELSE 0 END), 0) AS max_layer`).
+		Joins("LEFT JOIN " + m.tables.BlobKeywordTags + " AS t ON t.blob_id = b.id").
+		Where("NOT b.deleted")
+
+	// file_types — suffix match on path, escaped so a caller-supplied value
+	// containing % or _ is matched literally rather than as a wildcard.
+	if len(req.FileTypes) > 0 {
+		or := m.db.Session(&gorm.Session{NewDB: true})
+		for _, ft := range req.FileTypes {
+			or = or.Or("b.path LIKE ? ESCAPE '\\'", "%"+escapeLike(ft))
+		}
+		q = q.Where(or)
+	}
+	// folders — prefix match on path.
+	if len(req.Folders) > 0 {
+		or := m.db.Session(&gorm.Session{NewDB: true})
+		for _, f := range req.Folders {
+			or = or.Or("b.path LIKE ? ESCAPE '\\'", escapeLike(f)+"%")
+		}
+		q = q.Where(or)
+	}
+	if len(req.KeywordIDs) > 0 {
+		q = q.Where("EXISTS (SELECT 1 FROM "+m.tables.BlobKeywordTags+" k WHERE k.blob_id = b.id AND k.keyword_id IN ?)", req.KeywordIDs)
+	}
+	if len(req.Signals) > 0 {
+		q = q.Where("EXISTS (SELECT 1 FROM "+m.tables.BlobKeywordTags+" s WHERE s.blob_id = b.id AND s.signal IN ?)", req.Signals)
+	}
+
+	var results []blobWithLayer
+	// Tie-break on b.id makes ordering deterministic — the old in-Go
+	// sort.Slice by max layer alone was not stable.
+	if err := q.Group("b.id").Order("max_layer DESC, b.id").Limit(limit).Find(&results).Error; err != nil {
+		return GraphResult{}, fmt.Errorf("QueryGraph: %w", err)
+	}
+
+	nodeIDs := make(map[string]bool, len(results))
+	nodes := make([]GraphNode, len(results))
+	for i, r := range results {
+		nodeIDs[r.ID] = true
+		nodes[i] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r.BlobRow)}
+	}
+
+	edges, err := m.queryGraphEdges(ctx, nodeIDs, req.Relationships)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("QueryGraph: collect edges: %w", err)
+	}
+
+	return GraphResult{Nodes: nodes, Edges: edges}, nil
+}
+
+// queryGraphEdges collects all blob_references rows between nodes in the
+// given ID set, filtered by rel (edge name or descriptor). An empty rel
+// passes all edges through.
+func (m *gitManager) queryGraphEdges(ctx context.Context, nodeIDs map[string]bool, rel []string) ([]GraphEdge, error) {
+	if len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(nodeIDs))
+	for id := range nodeIDs {
+		ids = append(ids, id)
+	}
+	q := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
+		Where("from_blob_id IN ? AND to_blob_id IN ?", ids, ids)
+	if len(rel) > 0 {
+		q = q.Where("(name IN ? OR descriptor IN ?)", rel, rel)
+	}
+	var rows []gormstore.BlobReferenceRow
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	edges := make([]GraphEdge, len(rows))
+	for i, r := range rows {
+		edges[i] = GraphEdge{ID: r.Name + ":" + r.FromBlobID + ":" + r.ToBlobID, Name: r.Name, FromID: r.FromBlobID, ToID: r.ToBlobID}
+	}
+	return edges, nil
+}
+
+// escapeLike escapes SQL LIKE metacharacters (% and _) plus the escape
+// character itself, so a caller-supplied FileTypes/Folders value is matched
+// literally — pair with "ESCAPE '\\'" in the LIKE clause.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }

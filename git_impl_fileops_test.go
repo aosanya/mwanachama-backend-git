@@ -5,12 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 func TestWriteReadDeleteFile(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -119,7 +120,7 @@ func TestWriteReadDeleteFile(t *testing.T) {
 
 func TestDiffBetweenCommits(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
@@ -163,13 +164,13 @@ func TestDiffBetweenCommits(t *testing.T) {
 
 func TestImportRepoGuards(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	if _, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"}); err != nil {
 		t.Fatalf("InitRepo: %v", err)
 	}
 
-	// A Repository entity already exists — ImportRepo must refuse before it
+	// A Repository row already exists — ImportRepo must refuse before it
 	// ever touches the network.
 	if _, err := m.ImportRepo(ctx, ImportRepoRequest{Name: "other", SourceURL: "https://example.invalid/x.git"}); !errors.Is(err, ErrRepoAlreadyExists) {
 		t.Fatalf("expected ErrRepoAlreadyExists, got %v", err)
@@ -178,16 +179,13 @@ func TestImportRepoGuards(t *testing.T) {
 
 func TestImportRepoRejectsIfImportInProgress(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
-	now := "2026-01-01T00:00:00Z"
+	m := newTestManager(t)
+	now := models.NowRFC3339()
 
-	if _, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		TypeID: "ImportJob",
-		Properties: map[string]any{
-			"source_url": "https://example.com/first.git",
-			"status":     "pending", "error_message": "", "created_at": now, "updated_at": now,
-		},
-	}); err != nil {
+	jobRow := gormstore.ImportJobToRow(models.ImportJob{
+		SourceURL: "https://example.com/first.git", Status: "pending", CreatedAt: now, UpdatedAt: now,
+	})
+	if err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Create(&jobRow).Error; err != nil {
 		t.Fatalf("seed ImportJob: %v", err)
 	}
 
@@ -197,14 +195,14 @@ func TestImportRepoRejectsIfImportInProgress(t *testing.T) {
 }
 
 func TestGetImportStatusNotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	if _, err := m.GetImportStatus(context.Background(), "does-not-exist"); !errors.Is(err, ErrImportJobNotFound) {
 		t.Fatalf("expected ErrImportJobNotFound, got %v", err)
 	}
 }
 
 func TestCancelImportNotFound(t *testing.T) {
-	m := newTestManager()
+	m := newTestManager(t)
 	if err := m.CancelImport(context.Background(), "does-not-exist"); !errors.Is(err, ErrImportJobNotFound) {
 		t.Fatalf("expected ErrImportJobNotFound, got %v", err)
 	}
@@ -214,20 +212,16 @@ func TestCancelImportTerminalState(t *testing.T) {
 	for _, status := range []string{"completed", "failed", "cancelled"} {
 		t.Run("status="+status, func(t *testing.T) {
 			ctx := context.Background()
-			m := newTestManager()
-			now := "2026-01-01T00:00:00Z"
+			m := newTestManager(t)
+			now := models.NowRFC3339()
 
-			jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-				TypeID: "ImportJob",
-				Properties: map[string]any{
-					"source_url": "https://example.com/repo.git",
-					"status":     status, "error_message": "", "created_at": now, "updated_at": now,
-				},
+			jobRow := gormstore.ImportJobToRow(models.ImportJob{
+				SourceURL: "https://example.com/repo.git", Status: status, CreatedAt: now, UpdatedAt: now,
 			})
-			if err != nil {
+			if err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Create(&jobRow).Error; err != nil {
 				t.Fatalf("seed ImportJob: %v", err)
 			}
-			if err := m.CancelImport(ctx, jobEntity.ID); !errors.Is(err, ErrImportJobNotCancellable) {
+			if err := m.CancelImport(ctx, jobRow.ID); !errors.Is(err, ErrImportJobNotCancellable) {
 				t.Fatalf("status=%s: expected ErrImportJobNotCancellable, got %v", status, err)
 			}
 		})
@@ -236,7 +230,7 @@ func TestCancelImportTerminalState(t *testing.T) {
 
 func TestFetchBranchAlreadyFetchedGuard(t *testing.T) {
 	ctx := context.Background()
-	m := newTestManager()
+	m := newTestManager(t)
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
 	if err != nil {
