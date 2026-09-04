@@ -15,7 +15,7 @@ import (
 
 // ── Repository Lifecycle ──────────────────────────────────────────────────────
 
-// InitRepo creates a new Repository entity for this agency.
+// InitRepo creates a new Repository entity.
 // Returns [ErrRepoAlreadyExists] if a repository with the same name already exists.
 // Publishes [TopicRepoCreated] after a successful write.
 func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (Repository, error) {
@@ -42,8 +42,7 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (Repos
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	repoEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Repository",
+		TypeID: "Repository",
 		Properties: map[string]any{
 			"name":           req.Name,
 			"description":    req.Description,
@@ -62,8 +61,7 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (Repos
 	// Create the default branch pointing to no commit yet.
 	branchNow := time.Now().UTC().Format(time.RFC3339)
 	defaultBranchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Branch",
+		TypeID: "Branch",
 		Properties: map[string]any{
 			"name":       defaultBranch,
 			"is_default": true,
@@ -81,20 +79,19 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (Repos
 	// Create the forward has_branch edge (repo → branch) so listBranchesByRepo
 	// can locate it via RelationshipFilter{Name:"has_branch", FromID: repoID}.
 	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "has_branch",
-		FromID:   repoEntity.ID,
-		ToID:     defaultBranchEntity.ID,
+		Name:   "has_branch",
+		FromID: repoEntity.ID,
+		ToID:   defaultBranchEntity.ID,
 	}); err != nil {
 		return Repository{}, fmt.Errorf("InitRepo: link default branch: %w", err)
 	}
 
-	repo := entityToRepository(repoEntity, m.agencyID)
+	repo := entityToRepository(repoEntity)
 	m.publish(ctx, TopicRepoCreated, RepoCreatedPayload{RepoID: repoEntity.ID, Name: req.Name})
 	return repo, nil
 }
 
-// ListRepositories returns all Repository entities for this agency.
+// ListRepositories returns all Repository entities.
 func (m *gitManager) ListRepositories(ctx context.Context) ([]Repository, error) {
 	entities, err := m.listRepositories(ctx)
 	if err != nil {
@@ -102,7 +99,7 @@ func (m *gitManager) ListRepositories(ctx context.Context) ([]Repository, error)
 	}
 	out := make([]Repository, len(entities))
 	for i, e := range entities {
-		out[i] = entityToRepository(e, m.agencyID)
+		out[i] = entityToRepository(e)
 	}
 	return out, nil
 }
@@ -110,14 +107,14 @@ func (m *gitManager) ListRepositories(ctx context.Context) ([]Repository, error)
 // GetRepository retrieves a Repository entity by its ID.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) GetRepository(ctx context.Context, repoID string) (Repository, error) {
-	e, err := m.dm.GetEntity(ctx, m.agencyID, repoID)
+	e, err := m.dm.GetEntity(ctx, repoID)
 	if err != nil {
 		return Repository{}, ErrRepoNotInitialised
 	}
 	if e.TypeID != "Repository" {
 		return Repository{}, ErrRepoNotInitialised
 	}
-	return entityToRepository(e, m.agencyID), nil
+	return entityToRepository(e), nil
 }
 
 // GetRepositoryByName retrieves a Repository entity by its human-readable name.
@@ -129,7 +126,7 @@ func (m *gitManager) GetRepositoryByName(ctx context.Context, repoName string) (
 	}
 	for _, e := range entities {
 		if entitygraph.StringProp(e.Properties, "name") == repoName {
-			return entityToRepository(e, m.agencyID), nil
+			return entityToRepository(e), nil
 		}
 	}
 	return Repository{}, ErrRepoNotInitialised
@@ -149,7 +146,7 @@ func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 		return fmt.Errorf("DeleteRepo: list branches: %w", err)
 	}
 	for _, b := range branches {
-		if delErr := m.dm.DeleteEntity(ctx, m.agencyID, b.ID); delErr != nil {
+		if delErr := m.dm.DeleteEntity(ctx, b.ID); delErr != nil {
 			return fmt.Errorf("DeleteRepo: delete branch %s: %w", b.ID, delErr)
 		}
 	}
@@ -160,13 +157,13 @@ func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 		return fmt.Errorf("DeleteRepo: list tags: %w", err)
 	}
 	for _, t := range tags {
-		if delErr := m.dm.DeleteEntity(ctx, m.agencyID, t.ID); delErr != nil {
+		if delErr := m.dm.DeleteEntity(ctx, t.ID); delErr != nil {
 			return fmt.Errorf("DeleteRepo: delete tag %s: %w", t.ID, delErr)
 		}
 	}
 
 	// Soft-delete the repository itself.
-	if err := m.dm.DeleteEntity(ctx, m.agencyID, repo.ID); err != nil {
+	if err := m.dm.DeleteEntity(ctx, repo.ID); err != nil {
 		return fmt.Errorf("DeleteRepo: delete repo: %w", err)
 	}
 	return nil
@@ -181,20 +178,19 @@ func (m *gitManager) PurgeRepo(ctx context.Context, repoID string) error {
 
 // ── Repository internal helpers ───────────────────────────────────────────────
 
-// listRepositories returns all Repository entities for this agency.
+// listRepositories returns all Repository entities.
 func (m *gitManager) listRepositories(ctx context.Context) ([]entitygraph.Entity, error) {
 	return m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Repository",
+		TypeID: "Repository",
 	})
 }
 
-// ensureAgencyEntity returns the ID of the Agency entity for this agency,
-// creating it if it does not yet exist.
+// ensureAgencyEntity returns the ID of the single Agency root entity for
+// this deployment, creating it if it does not yet exist. Each deployment is
+// single-tenant, so there is at most one Agency entity in the database.
 func (m *gitManager) ensureAgencyEntity(ctx context.Context) (string, error) {
 	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Agency",
+		TypeID: "Agency",
 	})
 	if err != nil {
 		return "", err
@@ -204,10 +200,9 @@ func (m *gitManager) ensureAgencyEntity(ctx context.Context) (string, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	e, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Agency",
+		TypeID: "Agency",
 		Properties: map[string]any{
-			"name":       m.agencyID,
+			"name":       "default",
 			"created_at": now,
 			"updated_at": now,
 		},

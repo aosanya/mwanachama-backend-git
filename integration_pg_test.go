@@ -14,6 +14,18 @@ import (
 	"github.com/aosanya/mwanachama-backend-shared/postgres"
 )
 
+// uniqueRepoName returns a repository name namespaced to the running test,
+// so two tests in this file don't collide over InitRepo's global (no longer
+// AgencyID-scoped) uniqueness check when both run against the same
+// non-truncated POSTGRES_URL database in one `go test -tags=integration`
+// invocation. Before AgencyID was removed, each test generated its own
+// per-run agency ID precisely to keep same-named repos apart across tests;
+// this replaces that isolation now that the store is single-tenant.
+func uniqueRepoName(t *testing.T, base string) string {
+	t.Helper()
+	return fmt.Sprintf("%s-%s-%d", base, t.Name(), time.Now().UnixNano())
+}
+
 // openTestDB opens a connection to POSTGRES_URL, applying this domain's DDL
 // (postgres.DDL + the blob full-text index) idempotently before returning.
 // Skips the test if POSTGRES_URL is unset — `make test-pg` is the only
@@ -42,13 +54,6 @@ func openTestDB(t *testing.T) (*sql.DB, postgres.TableNames) {
 	return db, tables
 }
 
-// newTestAgencyID returns a unique-enough agency ID so concurrent/repeated
-// test runs against a shared database don't collide.
-func newTestAgencyID(t *testing.T) string {
-	t.Helper()
-	return fmt.Sprintf("it-%s-%d", t.Name(), time.Now().UnixNano())
-}
-
 // TestPostgresGitManagerRoundTrip exercises InitRepo → CreateBranch →
 // WriteFile → ReadFile → Log → MergeBranch against a real Postgres-backed
 // GitManager (postgres.Backend, wired through NewGitManager exactly as
@@ -58,11 +63,10 @@ func newTestAgencyID(t *testing.T) string {
 func TestPostgresGitManagerRoundTrip(t *testing.T) {
 	db, tables := openTestDB(t)
 	backend := postgres.NewBackend(db, tables)
-	agencyID := newTestAgencyID(t)
-	gm := NewGitManager(backend, backend, nil, agencyID, nil, nil)
+	gm := NewGitManager(backend, backend, nil, nil, nil)
 	ctx := context.Background()
 
-	repo, err := gm.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
+	repo, err := gm.InitRepo(ctx, CreateRepoRequest{Name: uniqueRepoName(t, "widgets")})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
 	}
@@ -123,20 +127,17 @@ func TestPostgresGitManagerRoundTrip(t *testing.T) {
 }
 
 // TestPostgresBlobSearch exercises PostgresBlobSearcher against real
-// Postgres full-text search: relevance ranking, agency scoping, and the
+// Postgres full-text search: relevance ranking and the
 // no-match-returns-empty-not-nil contract.
 func TestPostgresBlobSearch(t *testing.T) {
 	db, tables := openTestDB(t)
 	backend := postgres.NewBackend(db, tables)
-	agencyID := newTestAgencyID(t)
-	otherAgencyID := newTestAgencyID(t) + "-other"
 	ctx := context.Background()
 
-	mustCreateBlob := func(agency, path, name, content string) {
+	mustCreateBlob := func(path, name, content string) {
 		t.Helper()
 		if _, err := backend.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			AgencyID: agency,
-			TypeID:   "Blob",
+			TypeID: "Blob",
 			Properties: map[string]any{
 				"path":    path,
 				"name":    name,
@@ -147,14 +148,13 @@ func TestPostgresBlobSearch(t *testing.T) {
 		}
 	}
 
-	mustCreateBlob(agencyID, "auth/oauth.go", "oauth.go", "package auth\n\n// OAuth token exchange for the login flow.")
-	mustCreateBlob(agencyID, "auth/session.go", "session.go", "package auth\n\n// Session cookie handling, unrelated to tokens.")
-	mustCreateBlob(agencyID, "README.md", "README.md", "# widgets\n\nA widget factory with no authentication concerns.")
-	mustCreateBlob(otherAgencyID, "auth/oauth.go", "oauth.go", "package auth // OAuth in a different agency — must not leak into results")
+	mustCreateBlob("auth/oauth.go", "oauth.go", "package auth\n\n// OAuth token exchange for the login flow.")
+	mustCreateBlob("auth/session.go", "session.go", "package auth\n\n// Session cookie handling, unrelated to tokens.")
+	mustCreateBlob("README.md", "README.md", "# widgets\n\nA widget factory with no authentication concerns.")
 
 	searcher := NewPostgresBlobSearcher(db, tables)
 
-	results, err := searcher.Search(ctx, agencyID, "oauth token", 10)
+	results, err := searcher.Search(ctx, "oauth token", 10)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -168,16 +168,12 @@ func TestPostgresBlobSearch(t *testing.T) {
 		if r.Path == "auth/oauth.go" && r.Snippet == "" {
 			t.Fatalf("expected a non-empty snippet for the top match, got %+v", r)
 		}
-	}
-
-	// Agency scoping: the other agency's identically-named blob must never surface.
-	for _, r := range results {
 		if r.ID == "" {
 			t.Fatalf("result missing ID: %+v", r)
 		}
 	}
 
-	noMatch, err := searcher.Search(ctx, agencyID, "xyzzy-nonexistent-term", 10)
+	noMatch, err := searcher.Search(ctx, "xyzzy-nonexistent-term", 10)
 	if err != nil {
 		t.Fatalf("Search (no match): %v", err)
 	}
@@ -186,14 +182,6 @@ func TestPostgresBlobSearch(t *testing.T) {
 	}
 	if len(noMatch) != 0 {
 		t.Fatalf("expected no matches, got %+v", noMatch)
-	}
-
-	otherAgencyResults, err := searcher.Search(ctx, otherAgencyID, "oauth", 10)
-	if err != nil {
-		t.Fatalf("Search (other agency): %v", err)
-	}
-	if len(otherAgencyResults) != 1 {
-		t.Fatalf("expected exactly the other agency's own blob, got %+v", otherAgencyResults)
 	}
 }
 
@@ -205,11 +193,10 @@ func TestPostgresBlobSearchViaGitManager(t *testing.T) {
 	db, tables := openTestDB(t)
 	backend := postgres.NewBackend(db, tables)
 	searcher := NewPostgresBlobSearcher(db, tables)
-	agencyID := newTestAgencyID(t)
-	gm := NewGitManager(backend, backend, nil, agencyID, nil, searcher)
+	gm := NewGitManager(backend, backend, nil, nil, searcher)
 	ctx := context.Background()
 
-	repo, err := gm.InitRepo(ctx, CreateRepoRequest{Name: "widgets"})
+	repo, err := gm.InitRepo(ctx, CreateRepoRequest{Name: uniqueRepoName(t, "widgets")})
 	if err != nil {
 		t.Fatalf("InitRepo: %v", err)
 	}

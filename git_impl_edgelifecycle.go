@@ -72,9 +72,8 @@ func (m *gitManager) replicateEdgesOnBlob(
 	blobID, edgeName, sourceBranchID, defaultBranchID string,
 ) {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   blobID,
-		Name:     edgeName,
+		FromID: blobID,
+		Name:   edgeName,
 	})
 	if err != nil {
 		return
@@ -92,7 +91,6 @@ func (m *gitManager) replicateEdgesOnBlob(
 			props["descriptor"] = d
 		}
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID:   m.agencyID,
 			Name:       edgeName,
 			FromID:     rel.FromID,
 			ToID:       rel.ToID,
@@ -147,9 +145,8 @@ func (m *gitManager) deleteDocEdgesForBlob(ctx context.Context, blobID, branchID
 // whose "branch_id" property matches branchID.
 func (m *gitManager) deleteEdgesByBranchID(ctx context.Context, blobID, edgeName, branchID string) {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   blobID,
-		Name:     edgeName,
+		FromID: blobID,
+		Name:   edgeName,
 	})
 	if err != nil {
 		return
@@ -159,7 +156,7 @@ func (m *gitManager) deleteEdgesByBranchID(ctx context.Context, blobID, edgeName
 		if strMapProp(rel.Properties, "branch_id") != branchID {
 			continue
 		}
-		if err := m.dm.DeleteRelationship(ctx, m.agencyID, rel.ID); err != nil {
+		if err := m.dm.DeleteRelationship(ctx, rel.ID); err != nil {
 			log.Printf("[deleteEdgesByBranchID] delete %s rel %s: %v", edgeName, rel.ID, err)
 		}
 	}
@@ -217,9 +214,8 @@ func (m *gitManager) MigrateDocEdges(ctx context.Context, branchID, headCommitID
 // for the given branchID. The old edge is deleted and a new one is created.
 func (m *gitManager) migrateEdgesOnBlob(ctx context.Context, branchID, edgeName, oldBlobID, newBlobID string) error {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   oldBlobID,
-		Name:     edgeName,
+		FromID: oldBlobID,
+		Name:   edgeName,
 	})
 	if err != nil {
 		return fmt.Errorf("list %s: %w", edgeName, err)
@@ -235,12 +231,11 @@ func (m *gitManager) migrateEdgesOnBlob(ctx context.Context, branchID, edgeName,
 			props[k] = v
 		}
 		// Delete old edge.
-		if err := m.dm.DeleteRelationship(ctx, m.agencyID, rel.ID); err != nil {
+		if err := m.dm.DeleteRelationship(ctx, rel.ID); err != nil {
 			continue
 		}
 		// Create new edge on the newBlobID.
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID:   m.agencyID,
 			Name:       edgeName,
 			FromID:     newBlobID,
 			ToID:       rel.ToID,

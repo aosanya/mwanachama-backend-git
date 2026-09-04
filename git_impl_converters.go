@@ -7,6 +7,8 @@ package mwanachamagit
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
 )
@@ -14,11 +16,10 @@ import (
 // ── Entity → domain converters ────────────────────────────────────────────────
 
 // entityToRepository maps an entitygraph.Entity of type "Repository" to [Repository].
-func entityToRepository(e entitygraph.Entity, agencyID string) Repository {
+func entityToRepository(e entitygraph.Entity) Repository {
 	p := e.Properties
 	return Repository{
 		ID:            e.ID,
-		AgencyID:      agencyID,
 		Name:          entitygraph.StringProp(p, "name"),
 		Description:   entitygraph.StringProp(p, "description"),
 		DefaultBranch: entitygraph.StringProp(p, "default_branch"),
@@ -81,23 +82,70 @@ func entityToBlob(e entitygraph.Entity) Blob {
 	}
 }
 
-// allBlobsAtCommit returns all Blob entities reachable from the commit's tree.
+// allBlobsAtCommitMaxDepth bounds the outbound walk in [allBlobsAtCommit]:
+// commit → tree → subtree* → blob. Five hops comfortably covers realistic
+// directory nesting; deeper trees simply stop contributing blobs past that
+// point rather than erroring.
+const allBlobsAtCommitMaxDepth = 5
+
+// allBlobsAtCommitEdgeNames are the only edge labels [allBlobsAtCommit]
+// follows outbound from the commit: has_tree (commit → root Tree),
+// has_subtree (Tree → child Tree), and has_blob (Tree → Blob).
+var allBlobsAtCommitEdgeNames = map[string]bool{
+	"has_tree":    true,
+	"has_blob":    true,
+	"has_subtree": true,
+}
+
+// allBlobsAtCommit returns all Blob entities reachable from the commit's
+// tree, walking only has_tree/has_subtree/has_blob edges outbound from
+// commitID.
+//
+// Ported off entitygraph.TraverseGraph (a single recursive-CTE query in the
+// old multi-tenant Postgres DataManager) onto a manual outbound BFS using
+// only ListRelationships/GetEntity, since TraverseGraph was removed from the
+// DataManager interface entirely. Cost is one ListRelationships call per
+// visited Tree (Blob and Commit nodes are leaves/roots and are never
+// expanded further) plus one GetEntity per visited vertex — bounded by
+// [allBlobsAtCommitMaxDepth] hops, not by a node cap (unlike
+// GetNeighborhood, every blob under the commit's tree is expected to come
+// back, not just the first N).
 func (m *gitManager) allBlobsAtCommit(ctx context.Context, commitID string) ([]Blob, error) {
-	// Traverse outbound from commit: has_tree → has_blob / has_subtree.
-	result, err := m.dm.TraverseGraph(ctx, entitygraph.TraverseGraphRequest{
-		AgencyID:  m.agencyID,
-		StartID:   commitID,
-		Direction: "outbound",
-		Depth:     5,
-		Names:     []string{"has_tree", "has_blob", "has_subtree"},
-	})
-	if err != nil {
-		return nil, err
+	visited := map[string]bool{commitID: true}
+	frontier := []string{commitID}
+
+	for level := 0; level < allBlobsAtCommitMaxDepth && len(frontier) > 0; level++ {
+		var next []string
+		for _, id := range frontier {
+			rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{FromID: id})
+			if err != nil {
+				return nil, fmt.Errorf("allBlobsAtCommit %s: list relationships from %s: %w", commitID, id, err)
+			}
+			for _, rel := range rels {
+				if !allBlobsAtCommitEdgeNames[rel.Name] || visited[rel.ToID] {
+					continue
+				}
+				visited[rel.ToID] = true
+				next = append(next, rel.ToID)
+			}
+		}
+		frontier = next
 	}
+
 	var blobs []Blob
-	for _, v := range result.Vertices {
-		if v.TypeID == "Blob" {
-			blobs = append(blobs, entityToBlob(v))
+	for id := range visited {
+		if id == commitID {
+			continue
+		}
+		e, err := m.dm.GetEntity(ctx, id)
+		if err != nil {
+			if errors.Is(err, entitygraph.ErrEntityNotFound) {
+				continue // deleted after the edge referencing it was created
+			}
+			return nil, fmt.Errorf("allBlobsAtCommit %s: get entity %s: %w", commitID, id, err)
+		}
+		if e.TypeID == "Blob" {
+			blobs = append(blobs, entityToBlob(e))
 		}
 	}
 	return blobs, nil
@@ -109,9 +157,8 @@ func (m *gitManager) allBlobsAtCommit(ctx context.Context, commitID string) ([]B
 // given name from the entity identified by entityID. Returns "" on any error.
 func (m *gitManager) resolveParentID(ctx context.Context, entityID, relName string) string {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     relName,
-		FromID:   entityID,
+		Name:   relName,
+		FromID: entityID,
 	})
 	if err != nil || len(rels) == 0 {
 		return ""

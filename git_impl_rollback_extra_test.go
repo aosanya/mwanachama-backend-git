@@ -102,7 +102,7 @@ func TestRollbackByWorkflowRun_PreservesMergedSHA(t *testing.T) {
 
 	// Directly transition to "merged" with a recorded SHA — skip MergeBranch,
 	// which isn't the behavior under test here.
-	if _, err := m.dm.UpdateEntity(ctx, m.agencyID, mr.ID, updateEntityReq(map[string]any{
+	if _, err := m.dm.UpdateEntity(ctx, mr.ID, updateEntityReq(map[string]any{
 		"status":            MergeRequestStatusMerged,
 		"merged_commit_sha": "deadbeefdeadbeefdeadbeef",
 	})); err != nil {
@@ -166,7 +166,7 @@ func TestRollbackByWorkflowRun_PreservesDefaultBranch(t *testing.T) {
 	branches, _ := m.ListBranches(ctx, repo.ID)
 	defaultBranch := branches[0]
 
-	if _, err := m.dm.UpdateEntity(ctx, m.agencyID, defaultBranch.ID, updateEntityReq(map[string]any{
+	if _, err := m.dm.UpdateEntity(ctx, defaultBranch.ID, updateEntityReq(map[string]any{
 		"workflow_run_id": runID,
 	})); err != nil {
 		t.Fatalf("backfill default branch run_id: %v", err)

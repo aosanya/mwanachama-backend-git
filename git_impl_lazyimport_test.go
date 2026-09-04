@@ -34,7 +34,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	repoEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Repository",
+		TypeID: "Repository",
 		Properties: map[string]any{
 			"name": "lazy-repo", "default_branch": "main",
 			"bare_clone_path": "/this/path/does/not/exist/on/disk",
@@ -46,7 +46,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 		t.Fatalf("create Repository: %v", err)
 	}
 	branchEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Branch",
+		TypeID:     "Branch",
 		Properties: map[string]any{"name": "main", "status": "fetched", "is_default": true, "created_at": now, "updated_at": now},
 		Relationships: []entitygraph.EntityRelationshipRequest{
 			{Name: "belongs_to_repository", ToID: repoEnt.ID},
@@ -56,7 +56,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 		t.Fatalf("create Branch: %v", err)
 	}
 	blobEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Blob",
+		TypeID: "Blob",
 		Properties: map[string]any{
 			"sha": "dddddddddddddddddddddddddddddddddddddddd", "path": "file.txt", "name": "file.txt",
 			"extension": "txt", "size": int64(10), "encoding": "utf-8", "content": "", "created_at": now,
@@ -66,7 +66,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 		t.Fatalf("create Blob: %v", err)
 	}
 	treeEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Tree",
+		TypeID:     "Tree",
 		Properties: map[string]any{"sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "path": "", "created_at": now},
 		Relationships: []entitygraph.EntityRelationshipRequest{
 			{Name: "has_blob", ToID: blobEnt.ID},
@@ -76,7 +76,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 		t.Fatalf("create Tree: %v", err)
 	}
 	commitEnt, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Commit",
+		TypeID:     "Commit",
 		Properties: map[string]any{"sha": "ffffffffffffffffffffffffffffffffffffffff", "message": "stub commit", "created_at": now},
 		Relationships: []entitygraph.EntityRelationshipRequest{
 			{Name: "has_tree", ToID: treeEnt.ID},
@@ -85,7 +85,7 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Commit: %v", err)
 	}
-	if _, err := m.dm.UpdateEntity(ctx, m.agencyID, branchEnt.ID, updateEntityReq(map[string]any{"head_commit_id": commitEnt.ID})); err != nil {
+	if _, err := m.dm.UpdateEntity(ctx, branchEnt.ID, updateEntityReq(map[string]any{"head_commit_id": commitEnt.ID})); err != nil {
 		t.Fatalf("update branch HEAD: %v", err)
 	}
 
@@ -206,7 +206,7 @@ poll:
 		t.Errorf("expected TopicRepoImported published, got %v", pub.published())
 	}
 
-	branches, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{AgencyID: m.agencyID, TypeID: "Branch"})
+	branches, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Branch"})
 	if err != nil || len(branches) == 0 {
 		t.Fatalf("no Branch entities found after import (err=%v)", err)
 	}
@@ -214,7 +214,7 @@ poll:
 	// The default branch's auto-fetch was triggered synchronously by
 	// runImport; poll until it clears "fetching"/"stub" (background
 	// goroutine) so we can assert the README is actually readable.
-	repos, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{AgencyID: m.agencyID, TypeID: "Repository"})
+	repos, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Repository"})
 	if err != nil || len(repos) != 1 {
 		t.Fatalf("expected exactly one Repository, got %d (err=%v)", len(repos), err)
 	}
@@ -237,7 +237,7 @@ fetchPoll:
 					continue
 				}
 				mainBranch = b
-				ent, err := m.dm.GetEntity(ctx, m.agencyID, b.ID)
+				ent, err := m.dm.GetEntity(ctx, b.ID)
 				if err != nil {
 					continue
 				}

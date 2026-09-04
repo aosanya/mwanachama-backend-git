@@ -39,11 +39,7 @@ type Repository struct {
 	// ID is the unique entitygraph identifier for this repository.
 	ID string `json:"id"`
 
-	// AgencyID is the entitygraph ID of the owning Agency, resolved from
-	// the belongs_to_agency edge.
-	AgencyID string `json:"agency_id"`
-
-	// Name is the human-readable label, typically the agency ID used as the repo key.
+	// Name is the human-readable label used as the repo key.
 	Name string `json:"name"`
 
 	// Description is an optional free-text description of the repository.
@@ -315,8 +311,8 @@ type Blob struct {
 
 // CreateRepoRequest carries the parameters for [GitManager.InitRepo].
 type CreateRepoRequest struct {
-	// Name is the human-readable label for the repository, typically the
-	// agency ID used as the repo key. Required.
+	// Name is the human-readable label for the repository, used as the repo
+	// key. Required.
 	Name string `json:"name"`
 
 	// Description is an optional free-text description of the repository.
@@ -787,9 +783,6 @@ type BlobSearchResult struct {
 type FetchBranchJob struct {
 	// ID is the stable job identifier returned by [GitManager.FetchBranch].
 	ID string `json:"id"`
-
-	// AgencyID scopes this job to the owning agency.
-	AgencyID string `json:"agency_id"`
 
 	// RepoID is the entitygraph ID of the Repository being fetched.
 	RepoID string `json:"repo_id"`

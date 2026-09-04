@@ -10,9 +10,8 @@ import (
 
 func newTestManager() *gitManager {
 	return &gitManager{
-		dm:       newFakeDataManager(),
-		agencyID: "agency-1",
-		locker:   &mutexLocker{},
+		dm:     newFakeDataManager(),
+		locker: &mutexLocker{},
 	}
 }
 
@@ -22,7 +21,6 @@ func newTestManagerWithPublisher() (*gitManager, *fakePublisher) {
 	pub := &fakePublisher{}
 	m := &gitManager{
 		dm:        newFakeDataManager(),
-		agencyID:  "agency-1",
 		locker:    &mutexLocker{},
 		publisher: pub,
 	}
@@ -34,7 +32,7 @@ func newTestManagerWithPublisher() (*gitManager, *fakePublisher) {
 // go-git-touching methods (IndexPushedBranch is a deliberate G6 stub;
 // SearchBlobs gracefully no-ops with a nil searcher).
 func TestNewGitManagerSatisfiesInterface(t *testing.T) {
-	var gm GitManager = NewGitManager(newFakeDataManager(), nil, nil, "agency-1", nil, nil)
+	var gm GitManager = NewGitManager(newFakeDataManager(), nil, nil, nil, nil)
 	if _, err := gm.ListRepositories(context.Background()); err != nil {
 		t.Fatalf("ListRepositories on a fresh manager: %v", err)
 	}
@@ -53,8 +51,7 @@ func TestNewGitManagerSatisfiesInterface(t *testing.T) {
 func createCommit(t *testing.T, m *gitManager, repoID, sha string) entitygraph.Entity {
 	t.Helper()
 	e, err := m.dm.CreateEntity(context.Background(), entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Commit",
+		TypeID: "Commit",
 		Properties: map[string]any{
 			"sha":     sha,
 			"message": "test commit " + sha,
@@ -315,7 +312,6 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 		t.Fatalf("CreateKeyword: %v", err)
 	}
 	blob, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID:   m.agencyID,
 		TypeID:     "Blob",
 		Properties: map[string]any{"path": "auth.go", "name": "auth.go"},
 	})

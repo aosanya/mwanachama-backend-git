@@ -92,9 +92,6 @@ type ImportJob struct {
 	// ID is the stable job identifier returned by ImportRepo.
 	ID string
 
-	// AgencyID scopes this job to the owning agency.
-	AgencyID string
-
 	// Name is the human-readable repository name being imported.
 	Name string
 

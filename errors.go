@@ -3,7 +3,7 @@ package mwanachamagit
 import "errors"
 
 // ErrRepoAlreadyExists is returned by [GitManager.InitRepo] when a
-// repository already exists for the given agency ID.
+// repository with the same name already exists.
 var ErrRepoAlreadyExists = errors.New("repository already exists")
 
 // ErrBranchNotFound is returned when an operation targets a branch that
@@ -25,8 +25,7 @@ var ErrRefNotFound = errors.New("ref not found (branch, tag, or SHA)")
 // ── v2 GitManager errors ──────────────────────────────────────────────────────
 
 // ErrRepoNotInitialised is returned by [GitManager] methods when no
-// Repository entity has been created yet for this agency. Call
-// [GitManager.InitRepo] first.
+// Repository entity has been created yet. Call [GitManager.InitRepo] first.
 var ErrRepoNotInitialised = errors.New("repository not initialised")
 
 // ErrTagAlreadyExists is returned by [GitManager.CreateTag] when a Tag
@@ -44,13 +43,12 @@ var ErrDefaultBranchDeleteForbidden = errors.New("cannot delete the default bran
 // ── Import errors ─────────────────────────────────────────────────────────────
 
 // ErrImportJobNotFound is returned by [GitManager.GetImportStatus] and
-// [GitManager.CancelImport] when no import job with the given ID exists for
-// this agency.
+// [GitManager.CancelImport] when no import job with the given ID exists.
 var ErrImportJobNotFound = errors.New("import job not found")
 
 // ErrImportInProgress is returned by [GitManager.ImportRepo] when an import
-// job with status "pending" or "running" already exists for this agency.
-// Each agency supports at most one concurrent import.
+// job with status "pending" or "running" already exists. Each deployment
+// supports at most one concurrent import.
 var ErrImportInProgress = errors.New("import already in progress")
 
 // ErrImportJobNotCancellable is returned by [GitManager.CancelImport] when
@@ -105,7 +103,7 @@ var ErrMergeConcurrencyConflict = errors.New("merge conflict: default branch HEA
 
 // ErrMergeRequestNotFound is returned by [GitManager.GetMergeRequest],
 // [GitManager.CompleteMergeRequest], and [GitManager.CloseMergeRequest] when
-// no MergeRequest entity with the given ID exists for this agency.
+// no MergeRequest entity with the given ID exists.
 var ErrMergeRequestNotFound = errors.New("merge request not found")
 
 // ErrMergeRequestNotOpen is returned by [GitManager.CompleteMergeRequest] and

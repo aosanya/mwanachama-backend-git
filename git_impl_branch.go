@@ -67,14 +67,13 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 	} else if sourceBranch.HeadCommitID != "" {
 		// Fallback for branches that pre-date the sha property: resolve from the
 		// linked Commit entity.
-		if commitEntity, ceErr := m.dm.GetEntity(ctx, m.agencyID, sourceBranch.HeadCommitID); ceErr == nil {
+		if commitEntity, ceErr := m.dm.GetEntity(ctx, sourceBranch.HeadCommitID); ceErr == nil {
 			if sha := entitygraph.StringProp(commitEntity.Properties, "sha"); sha != "" {
 				branchProps["sha"] = sha
 			}
 		}
 	}
 	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID:   m.agencyID,
 		TypeID:     "Branch",
 		Properties: branchProps,
 		Relationships: []entitygraph.EntityRelationshipRequest{
@@ -88,10 +87,9 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 	// If the source branch has a HEAD commit, link this new branch to it too.
 	if sourceBranch.HeadCommitID != "" {
 		if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID: m.agencyID,
-			Name:     "points_to",
-			FromID:   branchEntity.ID,
-			ToID:     sourceBranch.HeadCommitID,
+			Name:   "points_to",
+			FromID: branchEntity.ID,
+			ToID:   sourceBranch.HeadCommitID,
 		}); relErr != nil {
 			return Branch{}, fmt.Errorf("CreateBranch: link head commit: %w", relErr)
 		}
@@ -100,10 +98,9 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 	// Create the forward has_branch edge (repo → branch) so listBranchesByRepo
 	// can locate it via RelationshipFilter{Name:"has_branch", FromID: repoID}.
 	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "has_branch",
-		FromID:   repo.ID,
-		ToID:     branchEntity.ID,
+		Name:   "has_branch",
+		FromID: repo.ID,
+		ToID:   branchEntity.ID,
 	}); relErr != nil {
 		return Branch{}, fmt.Errorf("CreateBranch: link has_branch: %w", relErr)
 	}
@@ -114,7 +111,7 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 // GetBranch retrieves a Branch entity by its entitygraph ID.
 // Returns [ErrBranchNotFound] if no branch with that ID exists.
 func (m *gitManager) GetBranch(ctx context.Context, branchID string) (Branch, error) {
-	e, err := m.dm.GetEntity(ctx, m.agencyID, branchID)
+	e, err := m.dm.GetEntity(ctx, branchID)
 	if err != nil {
 		return Branch{}, ErrBranchNotFound
 	}
@@ -127,17 +124,15 @@ func (m *gitManager) GetBranch(ctx context.Context, branchID string) (Branch, er
 		// reverse edge. Look up the forward has_branch edge (repo → branch)
 		// and heal by writing the missing belongs_to_repository edge.
 		rels, relErr := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			AgencyID: m.agencyID,
-			Name:     "has_branch",
-			ToID:     branchID,
+			Name: "has_branch",
+			ToID: branchID,
 		})
 		if relErr == nil && len(rels) > 0 {
 			repoID = rels[0].FromID
 			_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				AgencyID: m.agencyID,
-				Name:     "belongs_to_repository",
-				FromID:   branchID,
-				ToID:     repoID,
+				Name:   "belongs_to_repository",
+				FromID: branchID,
+				ToID:   repoID,
 			})
 		}
 	}
@@ -181,7 +176,7 @@ func (m *gitManager) GetBranchByName(ctx context.Context, repoID string, branchN
 // Returns [ErrBranchNotFound] if no branch with that ID exists.
 // Returns [ErrDefaultBranchDeleteForbidden] if branchID is the default branch.
 func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
-	e, err := m.dm.GetEntity(ctx, m.agencyID, branchID)
+	e, err := m.dm.GetEntity(ctx, branchID)
 	if err != nil {
 		return ErrBranchNotFound
 	}
@@ -194,7 +189,7 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 	headCommitID := entitygraph.StringProp(e.Properties, "head_commit_id")
 	m.deleteDocEdgesForBranch(ctx, branchID, headCommitID)
 
-	if err := m.dm.DeleteEntity(ctx, m.agencyID, branchID); err != nil {
+	if err := m.dm.DeleteEntity(ctx, branchID); err != nil {
 		return fmt.Errorf("DeleteBranch: %w", err)
 	}
 	return nil
@@ -204,9 +199,9 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 // forwarding the default branch's HEAD commit pointer to the source branch's
 // HEAD commit. Returns the updated default [Branch].
 //
-// The entire advance-head operation runs inside a per-agency [RefLocker] lock
-// so that two concurrent MergeBranch calls for the same agency cannot produce
-// a lost update. The CAS guard in [advanceBranchHead] provides a second layer
+// The entire advance-head operation runs inside a [RefLocker] lock
+// so that two concurrent MergeBranch calls cannot produce a lost update. The
+// CAS guard in [advanceBranchHead] provides a second layer
 // of protection: if the default branch HEAD changed between the read and the
 // write, [ErrMergeConcurrencyConflict] is returned and the caller may retry.
 //
@@ -232,7 +227,7 @@ func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (Branch, 
 	}
 
 	var updated Branch
-	lockErr := m.locker.WithMergeLock(ctx, m.agencyID, func() error {
+	lockErr := m.locker.WithMergeLock(ctx, func() error {
 		// Re-read the default branch inside the lock so we hold the freshest
 		// HeadCommitID as the CAS guard. This ensures two sequential merges
 		// both succeed; the CAS only fires if the entity was modified by an
@@ -296,8 +291,7 @@ func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, fi
 // closure aggregator path where no repository is specified.
 func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID string) ([]Branch, error) {
 	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Branch",
+		TypeID: "Branch",
 		Properties: map[string]any{
 			"workflow_run_id": runID,
 		},
@@ -321,9 +315,8 @@ func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID stri
 func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
 	// Primary: forward has_branch edges (repo → branch).
 	forwardRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "has_branch",
-		FromID:   repositoryID,
+		Name:   "has_branch",
+		FromID: repositoryID,
 	})
 	if err != nil {
 		return nil, err
@@ -332,7 +325,7 @@ func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string
 	if len(forwardRels) > 0 {
 		out := make([]entitygraph.Entity, 0, len(forwardRels))
 		for _, r := range forwardRels {
-			e, err := m.dm.GetEntity(ctx, m.agencyID, r.ToID)
+			e, err := m.dm.GetEntity(ctx, r.ToID)
 			if err != nil {
 				continue // skip soft-deleted branches
 			}
@@ -344,16 +337,15 @@ func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string
 	// Fallback: reverse belongs_to_repository edges (branch → repo).
 	// Used for repos that were imported before the has_branch edge was written.
 	reverseRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "belongs_to_repository",
-		ToID:     repositoryID,
+		Name: "belongs_to_repository",
+		ToID: repositoryID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]entitygraph.Entity, 0, len(reverseRels))
 	for _, r := range reverseRels {
-		e, err := m.dm.GetEntity(ctx, m.agencyID, r.FromID)
+		e, err := m.dm.GetEntity(ctx, r.FromID)
 		if err != nil {
 			continue // skip soft-deleted branches
 		}
@@ -392,7 +384,7 @@ func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (Br
 func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitID, expectedHeadCommitID string) (Branch, error) {
 	// CAS guard — only enforce when the caller supplies an expected value.
 	if expectedHeadCommitID != "" {
-		current, err := m.dm.GetEntity(ctx, m.agencyID, branchID)
+		current, err := m.dm.GetEntity(ctx, branchID)
 		if err != nil {
 			return Branch{}, fmt.Errorf("advanceBranchHead: read current branch: %w", err)
 		}
@@ -403,28 +395,26 @@ func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitI
 
 	// Remove old points_to edge if it exists.
 	oldRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "points_to",
-		FromID:   branchID,
+		Name:   "points_to",
+		FromID: branchID,
 	})
 	if err == nil {
 		for _, r := range oldRels {
-			_ = m.dm.DeleteRelationship(ctx, m.agencyID, r.ID)
+			_ = m.dm.DeleteRelationship(ctx, r.ID)
 		}
 	}
 
 	// Create the new points_to edge.
 	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "points_to",
-		FromID:   branchID,
-		ToID:     newCommitID,
+		Name:   "points_to",
+		FromID: branchID,
+		ToID:   newCommitID,
 	}); err != nil {
 		return Branch{}, fmt.Errorf("advanceBranchHead: link commit: %w", err)
 	}
 
 	// Fetch the new Commit entity to read its real git SHA.
-	commitEntity, err := m.dm.GetEntity(ctx, m.agencyID, newCommitID)
+	commitEntity, err := m.dm.GetEntity(ctx, newCommitID)
 	if err != nil {
 		return Branch{}, fmt.Errorf("advanceBranchHead: get commit: %w", err)
 	}
@@ -439,7 +429,7 @@ func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitI
 	if commitSHA != "" {
 		updateProps["sha"] = commitSHA
 	}
-	updated, err := m.dm.UpdateEntity(ctx, m.agencyID, branchID, entitygraph.UpdateEntityRequest{
+	updated, err := m.dm.UpdateEntity(ctx, branchID, entitygraph.UpdateEntityRequest{
 		Properties: updateProps,
 	})
 	if err != nil {

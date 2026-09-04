@@ -182,11 +182,10 @@ func TestImportRepoRejectsIfImportInProgress(t *testing.T) {
 	now := "2026-01-01T00:00:00Z"
 
 	if _, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "ImportJob",
+		TypeID: "ImportJob",
 		Properties: map[string]any{
-			"agency_id": m.agencyID, "source_url": "https://example.com/first.git",
-			"status": "pending", "error_message": "", "created_at": now, "updated_at": now,
+			"source_url": "https://example.com/first.git",
+			"status":     "pending", "error_message": "", "created_at": now, "updated_at": now,
 		},
 	}); err != nil {
 		t.Fatalf("seed ImportJob: %v", err)
@@ -219,11 +218,10 @@ func TestCancelImportTerminalState(t *testing.T) {
 			now := "2026-01-01T00:00:00Z"
 
 			jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-				AgencyID: m.agencyID,
-				TypeID:   "ImportJob",
+				TypeID: "ImportJob",
 				Properties: map[string]any{
-					"agency_id": m.agencyID, "source_url": "https://example.com/repo.git",
-					"status": status, "error_message": "", "created_at": now, "updated_at": now,
+					"source_url": "https://example.com/repo.git",
+					"status":     status, "error_message": "", "created_at": now, "updated_at": now,
 				},
 			})
 			if err != nil {

@@ -21,9 +21,8 @@ func countEdgesByBranchID(t *testing.T, m *gitManager, fromID, edgeName, targetB
 	t.Helper()
 	ctx := context.Background()
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   fromID,
-		Name:     edgeName,
+		FromID: fromID,
+		Name:   edgeName,
 	})
 	if err != nil {
 		t.Fatalf("countEdgesByBranchID: ListRelationships: %v", err)
@@ -141,7 +140,7 @@ func TestEdgeLifecycle_022a_References(t *testing.T) {
 	}
 
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID, FromID: blobB, Name: "references",
+		FromID: blobB, Name: "references",
 	})
 	if err != nil {
 		t.Fatalf("ListRelationships: %v", err)

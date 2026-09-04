@@ -76,7 +76,7 @@ func (m *gitManager) rollbackMergeRequestsForRun(ctx context.Context, workflowRu
 			continue
 		}
 		priorStatus := mr.Status
-		if _, err := m.dm.UpdateEntity(ctx, m.agencyID, mr.ID, entitygraph.UpdateEntityRequest{
+		if _, err := m.dm.UpdateEntity(ctx, mr.ID, entitygraph.UpdateEntityRequest{
 			Properties: map[string]any{
 				"status":     MergeRequestStatusRolledBack,
 				"updated_at": time.Now().UTC().Format(time.RFC3339),
@@ -104,8 +104,7 @@ func (m *gitManager) rollbackMergeRequestsForRun(ctx context.Context, workflowRu
 // callers can log and investigate the (always unexpected) condition.
 func (m *gitManager) deleteBranchesForRun(ctx context.Context, workflowRunID string) (deleted, skippedDefault int, err error) {
 	entities, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Branch",
+		TypeID: "Branch",
 	})
 	if listErr != nil {
 		return 0, 0, fmt.Errorf("list branches: %w", listErr)

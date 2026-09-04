@@ -25,19 +25,19 @@ type GitSchemaManager = entitygraph.SchemaManager
 // GitManager is the primary interface for Git-like repository management.
 // HTTP handlers hold this interface — never the concrete type.
 //
-// Each GitManager instance is scoped to a single agency. The agencyID is
-// fixed at construction time.
+// Each GitManager instance is scoped to a single deployment's database (one
+// deployment per agency); there is no in-process multi-tenancy.
 //
 // Implementations must be safe for concurrent use.
 type GitManager interface {
 	// ── Repository Lifecycle ──────────────────────────────────────────────────
 
-	// InitRepo creates a new Repository entity for this agency.
+	// InitRepo creates a new Repository entity.
 	// Returns [ErrRepoAlreadyExists] if a repository with the same name already exists.
-	// Publishes "git.{agencyID}.repo.created" after a successful write.
+	// Publishes "git.repo.created" after a successful write.
 	InitRepo(ctx context.Context, req CreateRepoRequest) (Repository, error)
 
-	// ListRepositories returns all Repository entities for this agency.
+	// ListRepositories returns all Repository entities.
 	ListRepositories(ctx context.Context) ([]Repository, error)
 
 	// GetRepository retrieves a Repository entity by its ID.
@@ -46,11 +46,11 @@ type GitManager interface {
 
 	// GetRepositoryByName retrieves a Repository entity by its human-readable
 	// name. Returns [ErrRepoNotInitialised] if no repository with that name
-	// exists for this agency.
+	// exists.
 	GetRepositoryByName(ctx context.Context, repoName string) (Repository, error)
 
 	// GetBranchByName retrieves a Branch entity by its human-readable name.
-	// Returns [ErrBranchNotFound] if no branch with that name exists for this agency.
+	// Returns [ErrBranchNotFound] if no branch with that name exists.
 	GetBranchByName(ctx context.Context, repoID string, branchName string) (Branch, error)
 
 	// DeleteRepo marks the specified repository entity as archived (soft delete).
@@ -109,7 +109,7 @@ type GitManager interface {
 	GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
 
 	// ListMergeRequests returns [MergeRequest] entities matching the given
-	// filter. An empty filter returns every MR for the agency.
+	// filter. An empty filter returns every MR.
 	ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]MergeRequest, error)
 
 	// CompleteMergeRequest performs the merge of the MR's source branch into
@@ -201,19 +201,18 @@ type GitManager interface {
 
 	// ── Repository Import ───────────────────────────────────────────────
 
-	// ImportRepo begins an async import of a public Git repository into this
-	// agency's entity graph. It returns immediately with an ImportJob whose
-	// ID can be used to poll GetImportStatus.
+	// ImportRepo begins an async import of a public Git repository into the
+	// entity graph. It returns immediately with an ImportJob whose ID can be
+	// used to poll GetImportStatus.
 	//
 	// Returns [ErrRepoAlreadyExists] if a Repository entity with the same name
-	// already exists for this agency.
+	// already exists.
 	// Returns [ErrImportInProgress] if a job with status "pending" or "running"
-	// already exists for this agency.
+	// already exists.
 	ImportRepo(ctx context.Context, req ImportRepoRequest) (ImportJob, error)
 
 	// GetImportStatus returns the current state of an import job.
-	// Returns [ErrImportJobNotFound] if no job with the given ID exists for
-	// this agency.
+	// Returns [ErrImportJobNotFound] if no job with the given ID exists.
 	GetImportStatus(ctx context.Context, jobID string) (ImportJob, error)
 
 	// CancelImport cancels a pending or running import job. The background
@@ -325,8 +324,7 @@ type GitManager interface {
 	FetchBranch(ctx context.Context, req FetchBranchRequest) (FetchBranchJob, error)
 
 	// GetFetchBranchStatus returns the current state of a fetch job.
-	// Returns [ErrImportJobNotFound] if no job with the given ID exists for
-	// this agency.
+	// Returns [ErrImportJobNotFound] if no job with the given ID exists.
 	GetFetchBranchStatus(ctx context.Context, jobID string) (FetchBranchJob, error)
 
 	// IndexPushedBranch indexes the commits that were just pushed and
@@ -354,39 +352,35 @@ type GitManager interface {
 // return an empty result without error.
 type BlobSearcher interface {
 	// Search runs a ranked full-text search against the blob store.
-	Search(ctx context.Context, agencyID, query string, limit int) ([]BlobSearchResult, error)
+	Search(ctx context.Context, query string, limit int) ([]BlobSearchResult, error)
 }
 
-// RefLocker serialises default-branch mutations per agency.
-// The default implementation is an in-process [sync.Mutex] keyed by agencyID.
+// RefLocker serialises default-branch mutations for this deployment.
+// The default implementation is an in-process [sync.Mutex].
 // Inject a distributed lock implementation for multi-instance deployments.
 type RefLocker interface {
-	// WithMergeLock acquires an exclusive per-agency lock, calls fn, then
-	// releases the lock. If ctx is cancelled before the lock is acquired,
-	// ctx.Err() is returned immediately without calling fn.
-	WithMergeLock(ctx context.Context, agencyID string, fn func() error) error
+	// WithMergeLock acquires an exclusive lock, calls fn, then releases the
+	// lock. If ctx is cancelled before the lock is acquired, ctx.Err() is
+	// returned immediately without calling fn.
+	WithMergeLock(ctx context.Context, fn func() error) error
 }
 
 // mutexLocker is the default in-process [RefLocker] implementation.
-// It is keyed by agencyID so concurrent merges for different agencies
-// never block each other.
 type mutexLocker struct {
-	mu sync.Map // agencyID → *sync.Mutex
+	mu sync.Mutex
 }
 
-// WithMergeLock implements [RefLocker] using a per-agency [sync.Mutex].
+// WithMergeLock implements [RefLocker] using an in-process [sync.Mutex].
 // Context cancellation is checked before fn is called; if the context is
 // already done the lock is never acquired.
-func (l *mutexLocker) WithMergeLock(ctx context.Context, agencyID string, fn func() error) error {
+func (l *mutexLocker) WithMergeLock(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	raw, _ := l.mu.LoadOrStore(agencyID, &sync.Mutex{})
-	mu := raw.(*sync.Mutex)
 	done := make(chan error, 1)
 	go func() {
-		mu.Lock()
-		defer mu.Unlock()
+		l.mu.Lock()
+		defer l.mu.Unlock()
 		done <- fn()
 	}()
 	select {
@@ -405,26 +399,34 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, agencyID string, fn fun
 // git-push wire protocol) is a deliberate "not implemented" stub; SearchBlobs
 // (G7) works today and gracefully no-ops until a real BlobSearcher is
 // injected.
+// dataManager is entitygraph.DataManager plus the relationship methods this
+// package needs — CreateRelationship/DeleteRelationship/ListRelationships
+// are no longer part of the shared interface (see its doc comment), since
+// each consumer knows its own fixed set of relationship labels.
+type dataManager interface {
+	entitygraph.DataManager
+	CreateRelationship(ctx context.Context, req entitygraph.CreateRelationshipRequest) (entitygraph.Relationship, error)
+	DeleteRelationship(ctx context.Context, relationshipID string) error
+	ListRelationships(ctx context.Context, filter entitygraph.RelationshipFilter) ([]entitygraph.Relationship, error)
+}
+
 type gitManager struct {
-	dm        entitygraph.DataManager // graph CRUD — injected by wiring code
-	sm        GitSchemaManager        // schema versioning — injected by wiring code
-	publisher events.Publisher        // optional; nil = skip event publishing
-	agencyID  string                  // the single agency ID for this database
-	locker    RefLocker               // serialises per-agency default-branch mutations
-	searcher  BlobSearcher            // optional; nil = SearchBlobs returns empty
+	dm        dataManager      // graph CRUD — injected by wiring code
+	sm        GitSchemaManager // schema versioning — injected by wiring code
+	publisher events.Publisher // optional; nil = skip event publishing
+	locker    RefLocker        // serialises default-branch mutations
+	searcher  BlobSearcher     // optional; nil = SearchBlobs returns empty
 }
 
 // NewGitManager constructs a [GitManager] backed by the given
 // [entitygraph.DataManager] and [GitSchemaManager].
-// agencyID is the single agency scoped to this database instance.
 // pub may be nil — events are skipped when no publisher is set.
 // locker may be nil — a default in-process [mutexLocker] is used.
 // searcher may be nil — SearchBlobs returns an empty result without error.
 func NewGitManager(
-	dm entitygraph.DataManager,
+	dm dataManager,
 	sm GitSchemaManager,
 	pub events.Publisher,
-	agencyID string,
 	locker RefLocker,
 	searcher BlobSearcher,
 ) GitManager {
@@ -435,7 +437,6 @@ func NewGitManager(
 		dm:        dm,
 		sm:        sm,
 		publisher: pub,
-		agencyID:  agencyID,
 		locker:    locker,
 		searcher:  searcher,
 	}

@@ -62,12 +62,7 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: resolve entity: %w", entityID, err)
 	}
 
-	result, err := m.dm.TraverseGraph(ctx, entitygraph.TraverseGraphRequest{
-		AgencyID:  m.agencyID,
-		StartID:   resolvedID,
-		Direction: "any",
-		Depth:     depth,
-	})
+	result, err := m.traverseNeighborhood(ctx, resolvedID, depth)
 	if err != nil {
 		if errors.Is(err, entitygraph.ErrEntityNotFound) {
 			return GraphResult{}, entitygraph.ErrEntityNotFound
@@ -78,19 +73,121 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 	return buildGraphResult(result, neighborhoodMaxNodes), nil
 }
 
+// neighborhoodTraversal carries the raw vertices and edges collected by
+// [gitManager.traverseNeighborhood], before [buildGraphResult] applies the
+// node cap and filters edges down to the included vertices.
+type neighborhoodTraversal struct {
+	Vertices []entitygraph.Entity
+	Edges    []entitygraph.Relationship
+}
+
+// traverseNeighborhood performs a bounded breadth-first walk from startID,
+// following relationships in either direction, up to depth hops or
+// [neighborhoodMaxNodes] visited vertices, whichever comes first.
+//
+// This replaces the single recursive-CTE query the Postgres DataManager used
+// to run server-side (entitygraph.TraverseGraph, removed from the interface
+// as part of retiring per-agency scoping): DataManager only exposes
+// ListRelationships/GetEntity now, so the traversal is driven from here
+// instead, level by level. Concretely this means:
+//   - Cost is O(frontier size × levels) round trips to the store (two
+//     ListRelationships calls — one by FromID, one by ToID — per frontier
+//     vertex per level, since "any" direction has no single-filter
+//     equivalent) rather than one server-side query. For the depth-1..3,
+//     100-node-capped shape GetNeighborhood is bounded to, this is a small,
+//     fixed number of round trips, not a scalability concern in practice.
+//   - A vertex whose edge was collected but who is then found to be
+//     soft-deleted (or hard gone) by the time GetEntity runs is dropped from
+//     the result rather than surfacing an error — the same
+//     entity-deleted-after-edge-was-created race the recursive CTE version
+//     could hit too, just now handled in application code instead of SQL.
+func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, depth int) (neighborhoodTraversal, error) {
+	start, err := m.dm.GetEntity(ctx, startID)
+	if err != nil {
+		return neighborhoodTraversal{}, err
+	}
+
+	visited := map[string]bool{startID: true}
+	order := []string{startID} // discovery order, oldest (closest) first
+	seenEdges := map[string]bool{}
+	var edges []entitygraph.Relationship
+	frontier := []string{startID}
+
+	for level := 0; level < depth && len(frontier) > 0 && len(visited) < neighborhoodMaxNodes; level++ {
+		var next []string
+		for _, id := range frontier {
+			// Deliberately no early exit here when the cap is already full:
+			// every id in this round's frontier was already admitted into
+			// visited (in a prior round), so it's already part of the
+			// returned vertex set. Its own edges — including ones to other
+			// already-visited nodes discoverable only from its own
+			// ListRelationships calls — must still be collected, or the
+			// result would contain two included nodes with a real edge
+			// between them but no edge record (the old TraverseGraph-CTE
+			// version fetched the full depth-bounded subgraph before
+			// truncating, so it never had this gap). The node cap itself is
+			// still enforced below, when deciding whether to admit a new
+			// neighbor; only the "should we bother querying this
+			// already-included id" cutoff is removed. The outer loop
+			// condition above still stops any further round from starting
+			// once the cap is full, so cost stays bounded to at most depth
+			// rounds over an at-most-neighborhoodMaxNodes-sized frontier.
+			outRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{FromID: id})
+			if err != nil {
+				return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: list outbound from %s: %w", id, err)
+			}
+			inRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{ToID: id})
+			if err != nil {
+				return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: list inbound to %s: %w", id, err)
+			}
+			for _, rel := range append(outRels, inRels...) {
+				if !seenEdges[rel.ID] {
+					seenEdges[rel.ID] = true
+					edges = append(edges, rel)
+				}
+				neighborID := rel.ToID
+				if neighborID == id {
+					neighborID = rel.FromID
+				}
+				if visited[neighborID] || len(visited) >= neighborhoodMaxNodes {
+					continue
+				}
+				visited[neighborID] = true
+				order = append(order, neighborID)
+				next = append(next, neighborID)
+			}
+		}
+		frontier = next
+	}
+
+	vertices := make([]entitygraph.Entity, 0, len(order))
+	vertices = append(vertices, start)
+	for _, id := range order[1:] {
+		e, err := m.dm.GetEntity(ctx, id)
+		if err != nil {
+			if errors.Is(err, entitygraph.ErrEntityNotFound) {
+				continue // entity was deleted after the edge referencing it was created
+			}
+			return neighborhoodTraversal{}, fmt.Errorf("traverseNeighborhood: get entity %s: %w", id, err)
+		}
+		vertices = append(vertices, e)
+	}
+
+	return neighborhoodTraversal{Vertices: vertices, Edges: edges}, nil
+}
+
 // resolveEntityID returns the canonical entity graph ID. If entityID is already
 // a valid entity key it is returned as-is. Otherwise, the method attempts to
 // find a Blob entity whose "path" property matches entityID and returns that
 // entity's ID.
 func (m *gitManager) resolveEntityID(ctx context.Context, entityID string) (string, error) {
 	// Fast path: check if entityID is a direct entity key.
-	if _, err := m.dm.GetEntity(ctx, m.agencyID, entityID); err == nil {
+	if _, err := m.dm.GetEntity(ctx, entityID); err == nil {
 		return entityID, nil
 	}
 
 	// Slow path: look up Blob by "path" property.
 	entities, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID:   m.agencyID,
 		TypeID:     "Blob",
 		Properties: map[string]any{"path": entityID},
 	})
@@ -114,10 +211,10 @@ func clampDepth(d int) int {
 	return d
 }
 
-// buildGraphResult converts a [entitygraph.TraverseGraphResult] to a
-// [GraphResult], applying the given node cap. Edges whose endpoints fall
-// outside the cap are dropped.
-func buildGraphResult(raw entitygraph.TraverseGraphResult, cap int) GraphResult {
+// buildGraphResult converts a [neighborhoodTraversal] to a [GraphResult],
+// applying the given node cap. Edges whose endpoints fall outside the cap
+// are dropped.
+func buildGraphResult(raw neighborhoodTraversal, cap int) GraphResult {
 	// Cap vertices first.
 	verts := raw.Vertices
 	if len(verts) > cap {
@@ -210,7 +307,7 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 	// Fetch full entity details for each matched ID and build the result.
 	nodes := make([]GraphNode, 0, len(matchedIDs))
 	for entityID := range matchedIDs {
-		e, err := m.dm.GetEntity(ctx, m.agencyID, entityID)
+		e, err := m.dm.GetEntity(ctx, entityID)
 		if err != nil {
 			continue // skip entities that have been soft-deleted since the edge scan
 		}
@@ -247,9 +344,8 @@ func (m *gitManager) expandKeyword(ctx context.Context, kwID string, cascade boo
 // into the accumulator set, following has_child edges.
 func (m *gitManager) collectDescendants(ctx context.Context, parentID string, acc map[string]bool) error {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   parentID,
-		Name:     "has_child",
+		FromID: parentID,
+		Name:   "has_child",
 	})
 	if err != nil {
 		return fmt.Errorf("collectDescendants %s: %w", parentID, err)
@@ -272,9 +368,8 @@ func (m *gitManager) entitiesTaggedWith(ctx context.Context, kwSet map[string]bo
 	result := make(map[string]bool)
 	for kwID := range kwSet {
 		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			AgencyID: m.agencyID,
-			ToID:     kwID,
-			Name:     "tagged_with",
+			ToID: kwID,
+			Name: "tagged_with",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("entitiesTaggedWith %s: %w", kwID, err)
@@ -295,8 +390,7 @@ func (m *gitManager) edgesBetween(ctx context.Context, ids map[string]bool) ([]G
 	for entityID := range ids {
 		// Outbound edges from this entity.
 		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			AgencyID: m.agencyID,
-			FromID:   entityID,
+			FromID: entityID,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("edgesBetween %s: %w", entityID, err)
@@ -356,8 +450,7 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 	}
 
 	blobs, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Blob",
+		TypeID: "Blob",
 	})
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("QueryGraph: list blobs: %w", err)
@@ -365,8 +458,7 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 	blobs = filterBlobsByPath(blobs, req.FileTypes, req.Folders)
 
 	tagEdges, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "tagged_with",
+		Name: "tagged_with",
 	})
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("QueryGraph: list tagged_with edges: %w", err)
@@ -451,8 +543,7 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 // Falls back to defaultSignalLayers when the store is empty.
 func (m *gitManager) loadSignalLayers(ctx context.Context) (map[string]int, error) {
 	signals, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Signal",
+		TypeID: "Signal",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("loadSignalLayers: %w", err)
@@ -523,8 +614,7 @@ func (m *gitManager) queryGraphEdges(ctx context.Context, nodeIDs map[string]boo
 	var edges []GraphEdge
 	for nodeID := range nodeIDs {
 		rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			AgencyID: m.agencyID,
-			FromID:   nodeID,
+			FromID: nodeID,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("queryGraphEdges %s: %w", nodeID, err)

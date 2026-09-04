@@ -43,7 +43,7 @@ var validDocEdges = map[string]bool{
 func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest) (Keyword, error) {
 	// Validate parent exists if specified.
 	if req.ParentID != "" {
-		_, err := m.dm.GetEntity(ctx, m.agencyID, req.ParentID)
+		_, err := m.dm.GetEntity(ctx, req.ParentID)
 		if err != nil {
 			if errors.Is(err, entitygraph.ErrEntityNotFound) {
 				return Keyword{}, ErrKeywordNotFound
@@ -73,8 +73,7 @@ func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest
 	}
 
 	entity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Keyword",
+		TypeID: "Keyword",
 		Properties: map[string]any{
 			"name":        req.Name,
 			"description": req.Description,
@@ -92,10 +91,9 @@ func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest
 	// can traverse downwards.
 	if req.ParentID != "" {
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID: m.agencyID,
-			Name:     "has_child",
-			FromID:   req.ParentID,
-			ToID:     entity.ID,
+			Name:   "has_child",
+			FromID: req.ParentID,
+			ToID:   entity.ID,
 		}); err != nil {
 			return Keyword{}, fmt.Errorf("CreateKeyword: link has_child: %w", err)
 		}
@@ -107,7 +105,7 @@ func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest
 // GetKeyword retrieves a Keyword entity by its entitygraph ID.
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
 func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (Keyword, error) {
-	entity, err := m.dm.GetEntity(ctx, m.agencyID, keywordID)
+	entity, err := m.dm.GetEntity(ctx, keywordID)
 	if err != nil {
 		if errors.Is(err, entitygraph.ErrEntityNotFound) {
 			return Keyword{}, ErrKeywordNotFound
@@ -120,9 +118,8 @@ func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (Keyword,
 	kw := entityToKeyword(entity)
 	// Populate ParentID from belongs_to_parent relationship.
 	parentRels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   keywordID,
-		Name:     "belongs_to_parent",
+		FromID: keywordID,
+		Name:   "belongs_to_parent",
 	})
 	if err != nil {
 		return Keyword{}, fmt.Errorf("GetKeyword %s: list parent: %w", keywordID, err)
@@ -188,7 +185,7 @@ func (m *gitManager) GetKeywordTree(ctx context.Context, keywordID string) ([]Ke
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
 func (m *gitManager) UpdateKeyword(ctx context.Context, keywordID string, req UpdateKeywordRequest) (Keyword, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	entity, err := m.dm.UpdateEntity(ctx, m.agencyID, keywordID, entitygraph.UpdateEntityRequest{
+	entity, err := m.dm.UpdateEntity(ctx, keywordID, entitygraph.UpdateEntityRequest{
 		Properties: map[string]any{
 			"name":        req.Name,
 			"description": req.Description,
@@ -235,18 +232,16 @@ func (m *gitManager) DeleteKeyword(ctx context.Context, keywordID string) error 
 		// Re-attach child to new parent (if any).
 		if kw.ParentID != "" {
 			if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				AgencyID: m.agencyID,
-				Name:     "belongs_to_parent",
-				FromID:   child.ID,
-				ToID:     kw.ParentID,
+				Name:   "belongs_to_parent",
+				FromID: child.ID,
+				ToID:   kw.ParentID,
 			}); err != nil {
 				return fmt.Errorf("DeleteKeyword %s: reparent child: %w", keywordID, err)
 			}
 			if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				AgencyID: m.agencyID,
-				Name:     "has_child",
-				FromID:   kw.ParentID,
-				ToID:     child.ID,
+				Name:   "has_child",
+				FromID: kw.ParentID,
+				ToID:   child.ID,
 			}); err != nil {
 				return fmt.Errorf("DeleteKeyword %s: reparent has_child: %w", keywordID, err)
 			}
@@ -254,7 +249,7 @@ func (m *gitManager) DeleteKeyword(ctx context.Context, keywordID string) error 
 	}
 
 	// Delete the keyword entity itself.
-	if err := m.dm.DeleteEntity(ctx, m.agencyID, keywordID); err != nil {
+	if err := m.dm.DeleteEntity(ctx, keywordID); err != nil {
 		if errors.Is(err, entitygraph.ErrEntityNotFound) {
 			return ErrKeywordNotFound
 		}
@@ -284,10 +279,9 @@ func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) erro
 	}
 
 	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     req.RelationshipName,
-		FromID:   req.FromEntityID,
-		ToID:     req.ToEntityID,
+		Name:   req.RelationshipName,
+		FromID: req.FromEntityID,
+		ToID:   req.ToEntityID,
 		Properties: mergeEdgeProps(req.Properties, map[string]any{
 			"branch_id": req.BranchID,
 		}),
@@ -344,8 +338,7 @@ func (m *gitManager) listKeywordsByParent(ctx context.Context, parentID string) 
 		// For root listing, return all keywords with TypeID "Keyword" and rely on
 		// the tree build logic. For now we list all and filter at the caller.
 		return m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			AgencyID: m.agencyID,
-			TypeID:   "Keyword",
+			TypeID: "Keyword",
 		})
 	}
 	return m.listChildEntities(ctx, parentID)
@@ -355,16 +348,15 @@ func (m *gitManager) listKeywordsByParent(ctx context.Context, parentID string) 
 // via has_child relationships.
 func (m *gitManager) listChildEntities(ctx context.Context, parentID string) ([]entitygraph.Entity, error) {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   parentID,
-		Name:     "has_child",
+		FromID: parentID,
+		Name:   "has_child",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listChildEntities %s: %w", parentID, err)
 	}
 	out := make([]entitygraph.Entity, 0, len(rels))
 	for _, rel := range rels {
-		e, err := m.dm.GetEntity(ctx, m.agencyID, rel.ToID)
+		e, err := m.dm.GetEntity(ctx, rel.ToID)
 		if err != nil {
 			continue // skip deleted or missing keywords
 		}
@@ -395,16 +387,15 @@ func (m *gitManager) buildKeywordTreeNode(ctx context.Context, e entitygraph.Ent
 // Name, and ToID and deletes it. Returns [ErrEdgeNotFound] if not found.
 func (m *gitManager) removeRelationshipByEndpoints(ctx context.Context, fromID, name, toID string) error {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		FromID:   fromID,
-		Name:     name,
+		FromID: fromID,
+		Name:   name,
 	})
 	if err != nil {
 		return fmt.Errorf("removeRelationshipByEndpoints: list: %w", err)
 	}
 	for _, rel := range rels {
 		if rel.ToID == toID {
-			if err := m.dm.DeleteRelationship(ctx, m.agencyID, rel.ID); err != nil {
+			if err := m.dm.DeleteRelationship(ctx, rel.ID); err != nil {
 				return fmt.Errorf("removeRelationshipByEndpoints: delete: %w", err)
 			}
 			return nil

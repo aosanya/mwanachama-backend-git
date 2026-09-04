@@ -142,7 +142,7 @@ func buildNestedTrees(files map[string]plumbing.Hash) (plumbing.Hash, []treeReco
 // the parent commit plus the new file, so the branch accumulates files
 // correctly across successive writes.
 //
-// The entire operation runs inside the per-agency [RefLocker] lock so that
+// The entire operation runs inside the [RefLocker] lock so that
 // concurrent writes chain commits onto each other instead of racing the
 // branch ref. Without this, each caller reads the same parent HEAD, builds a
 // sibling commit, and the unsynchronised [gitManager.advanceBranchHead] call
@@ -152,7 +152,7 @@ func buildNestedTrees(files map[string]plumbing.Hash) (plumbing.Hash, []treeReco
 // Returns [ErrRepoNotInitialised] if no repository entity exists.
 func (m *gitManager) WriteFile(ctx context.Context, req WriteFileRequest) (Commit, error) {
 	var result Commit
-	lockErr := m.locker.WithMergeLock(ctx, m.agencyID, func() error {
+	lockErr := m.locker.WithMergeLock(ctx, func() error {
 		c, err := m.writeFileLocked(ctx, req)
 		if err != nil {
 			return err
@@ -166,8 +166,8 @@ func (m *gitManager) WriteFile(ctx context.Context, req WriteFileRequest) (Commi
 	return result, nil
 }
 
-// writeFileLocked is the body of WriteFile that must run under the per-agency
-// RefLocker. Do not call directly outside of WriteFile.
+// writeFileLocked is the body of WriteFile that must run under the
+// [RefLocker]. Do not call directly outside of WriteFile.
 func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) (Commit, error) {
 	branch, err := m.GetBranch(ctx, req.BranchID)
 	if err != nil {
@@ -206,8 +206,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	blobSHA := blobHash.String()
 
 	blobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Blob",
+		TypeID: "Blob",
 		Properties: map[string]any{
 			"sha":        blobSHA,
 			"path":       req.Path,
@@ -229,7 +228,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	var parentHashes []plumbing.Hash
 	if branch.HeadCommitID != "" {
 		parentIDs = []string{branch.HeadCommitID}
-		parentEntity, err := m.dm.GetEntity(ctx, m.agencyID, branch.HeadCommitID)
+		parentEntity, err := m.dm.GetEntity(ctx, branch.HeadCommitID)
 		if err != nil {
 			return Commit{}, fmt.Errorf("WriteFile: get parent commit: %w", err)
 		}
@@ -269,8 +268,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	var rootTreeEntityID string
 	for _, tr := range treeRecords {
 		te, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			AgencyID: m.agencyID,
-			TypeID:   "Tree",
+			TypeID: "Tree",
 			Properties: map[string]any{
 				"sha":        tr.sha,
 				"path":       tr.path,
@@ -327,8 +325,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	}
 
 	commitEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Commit",
+		TypeID: "Commit",
 		Properties: map[string]any{
 			"sha":             commitSHA,
 			"message":         message,
@@ -354,14 +351,14 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 		{"belongs_to_commit", rootTreeEntityID, commitEntity.ID},
 	} {
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID: m.agencyID, Name: rel.name, FromID: rel.from, ToID: rel.to,
+			Name: rel.name, FromID: rel.from, ToID: rel.to,
 		}); err != nil {
 			return Commit{}, fmt.Errorf("WriteFile: link %s: %w", rel.name, err)
 		}
 	}
 	if len(parentIDs) > 0 {
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID: m.agencyID, Name: "has_parent", FromID: commitEntity.ID, ToID: parentIDs[0],
+			Name: "has_parent", FromID: commitEntity.ID, ToID: parentIDs[0],
 		}); err != nil {
 			return Commit{}, fmt.Errorf("WriteFile: link has_parent: %w", err)
 		}
@@ -369,7 +366,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	// Wire root tree → has_blob → every blob so allBlobsAtCommit finds them all.
 	for path, blobEntityID := range blobEntityByPath {
 		if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-			AgencyID: m.agencyID, Name: "has_blob", FromID: rootTreeEntityID, ToID: blobEntityID,
+			Name: "has_blob", FromID: rootTreeEntityID, ToID: blobEntityID,
 		}); err != nil {
 			log.Printf("WriteFile: link has_blob path=%q: %v (non-fatal)", path, err)
 		}
@@ -657,16 +654,15 @@ func (m *gitManager) walkCommitChain(ctx context.Context, startCommitID string, 
 		}
 		visited[current] = true
 
-		e, err := m.dm.GetEntity(ctx, m.agencyID, current)
+		e, err := m.dm.GetEntity(ctx, current)
 		if err != nil {
 			continue
 		}
 		result = append(result, e)
 
 		parents, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-			AgencyID: m.agencyID,
-			Name:     "has_parent",
-			FromID:   current,
+			Name:   "has_parent",
+			FromID: current,
 		})
 		if err != nil {
 			continue
@@ -699,13 +695,12 @@ func (m *gitManager) resolveRef(ctx context.Context, ref string) (string, error)
 		return branch.HeadCommitID, nil
 	}
 	// Try as a commit entity ID directly.
-	if _, err := m.dm.GetEntity(ctx, m.agencyID, ref); err == nil {
+	if _, err := m.dm.GetEntity(ctx, ref); err == nil {
 		return ref, nil
 	}
 	// Try as a SHA — scan all commits.
 	commits, err := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID: m.agencyID,
-		TypeID:   "Commit",
+		TypeID: "Commit",
 	})
 	if err != nil {
 		return "", err

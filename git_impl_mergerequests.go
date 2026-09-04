@@ -61,7 +61,6 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 		"updated_at":         now,
 	}
 	entity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID:   m.agencyID,
 		TypeID:     "MergeRequest",
 		Properties: props,
 		Relationships: []entitygraph.EntityRelationshipRequest{
@@ -77,10 +76,9 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 	// Forward has_merge_request edge (repo → MR) so listMergeRequestsByRepo
 	// can locate it without traversing the reverse direction.
 	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "has_merge_request",
-		FromID:   repo.ID,
-		ToID:     entity.ID,
+		Name:   "has_merge_request",
+		FromID: repo.ID,
+		ToID:   entity.ID,
 	}); relErr != nil {
 		return MergeRequest{}, fmt.Errorf("CreateMergeRequest: link has_merge_request: %w", relErr)
 	}
@@ -99,7 +97,7 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 
 // GetMergeRequest retrieves a MergeRequest by ID.
 func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error) {
-	e, err := m.dm.GetEntity(ctx, m.agencyID, mrID)
+	e, err := m.dm.GetEntity(ctx, mrID)
 	if err != nil {
 		return MergeRequest{}, ErrMergeRequestNotFound
 	}
@@ -111,7 +109,7 @@ func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (MergeReq
 }
 
 // ListMergeRequests returns MRs matching the filter. An empty filter returns
-// every MR for the agency.
+// every MR.
 func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestFilter) ([]MergeRequest, error) {
 	var entities []entitygraph.Entity
 	var err error
@@ -214,7 +212,7 @@ func (m *gitManager) transitionMRStatus(ctx context.Context, mrID, status, merge
 	if errMsg != "" {
 		props["error_message"] = errMsg
 	}
-	entity, err := m.dm.UpdateEntity(ctx, m.agencyID, mrID, entitygraph.UpdateEntityRequest{
+	entity, err := m.dm.UpdateEntity(ctx, mrID, entitygraph.UpdateEntityRequest{
 		Properties: props,
 	})
 	if err != nil {
@@ -227,16 +225,15 @@ func (m *gitManager) transitionMRStatus(ctx context.Context, mrID, status, merge
 // listMergeRequestsByRepo returns all MR entities linked to the given repository.
 func (m *gitManager) listMergeRequestsByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "has_merge_request",
-		FromID:   repositoryID,
+		Name:   "has_merge_request",
+		FromID: repositoryID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]entitygraph.Entity, 0, len(rels))
 	for _, r := range rels {
-		e, err := m.dm.GetEntity(ctx, m.agencyID, r.ToID)
+		e, err := m.dm.GetEntity(ctx, r.ToID)
 		if err != nil {
 			continue // skip soft-deleted MRs
 		}
@@ -245,8 +242,8 @@ func (m *gitManager) listMergeRequestsByRepo(ctx context.Context, repositoryID s
 	return out, nil
 }
 
-// listAllMergeRequests returns every MR entity for this agency by listing all
-// repositories first and concatenating their MRs. The has_merge_request edge
+// listAllMergeRequests returns every MR entity by listing all repositories
+// first and concatenating their MRs. The has_merge_request edge
 // is keyed by FromID, so a per-repo loop is the natural traversal.
 func (m *gitManager) listAllMergeRequests(ctx context.Context) ([]entitygraph.Entity, error) {
 	repos, err := m.listRepositories(ctx)

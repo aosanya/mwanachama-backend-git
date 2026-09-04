@@ -4,6 +4,8 @@ package mwanachamagit
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/aosanya/mwanachama-backend-shared/entitygraph"
@@ -15,10 +17,9 @@ import (
 func seedTaggedWith(t *testing.T, m *gitManager, blobID, kwID, signal, branchID string) {
 	t.Helper()
 	_, err := m.dm.CreateRelationship(context.Background(), entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "tagged_with",
-		FromID:   blobID,
-		ToID:     kwID,
+		Name:   "tagged_with",
+		FromID: blobID,
+		ToID:   kwID,
 		Properties: map[string]any{
 			"signal":    signal,
 			"note":      "",
@@ -34,7 +35,7 @@ func seedTaggedWith(t *testing.T, m *gitManager, blobID, kwID, signal, branchID 
 func listBlobIDs(t *testing.T, m *gitManager) []string {
 	t.Helper()
 	blobs, err := m.dm.ListEntities(context.Background(), entitygraph.EntityFilter{
-		AgencyID: m.agencyID, TypeID: "Blob",
+		TypeID: "Blob",
 	})
 	if err != nil {
 		t.Fatalf("listBlobIDs: %v", err)
@@ -172,7 +173,7 @@ func TestQueryGraph_SignalFilter(t *testing.T) {
 
 	pathSignal := map[string]string{"high.go": "authority", "low.go": "surface"}
 	blobsByID := map[string]string{}
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{AgencyID: m.agencyID, TypeID: "Blob"})
+	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
 	for _, b := range allBlobs {
 		path, _ := b.Properties["path"].(string)
 		sig := pathSignal[path]
@@ -210,7 +211,7 @@ func TestQueryGraph_KeywordIDFilter(t *testing.T) {
 	kwA, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwA", Scope: "agency"})
 	kwB, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwB", Scope: "agency"})
 
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{AgencyID: m.agencyID, TypeID: "Blob"})
+	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
 	var aID, bID string
 	for _, b := range allBlobs {
 		path, _ := b.Properties["path"].(string)
@@ -243,7 +244,7 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 	writeTestFile(t, m, branch.ID, "y.go", "package y")
 
 	kw, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwE", Scope: "agency"})
-	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{AgencyID: m.agencyID, TypeID: "Blob"})
+	allBlobs, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{TypeID: "Blob"})
 	var xID, yID string
 	for _, b := range allBlobs {
 		path, _ := b.Properties["path"].(string)
@@ -256,7 +257,7 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 		seedTaggedWith(t, m, b.ID, kw.ID, "surface", branch.ID)
 	}
 	if _, err := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID, Name: "references", FromID: xID, ToID: yID,
+		Name: "references", FromID: xID, ToID: yID,
 		Properties: map[string]any{"descriptor": "depends_on", "branch_id": branch.ID},
 	}); err != nil {
 		t.Fatalf("CreateRelationship references: %v", err)
@@ -274,5 +275,280 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 		if !nodeSet[e.FromID] || !nodeSet[e.ToID] {
 			t.Errorf("edge %s references nodes outside result set", e.ID)
 		}
+	}
+}
+
+// ── GetNeighborhood (GIT-020) ─────────────────────────────────────────────────
+//
+// GetNeighborhood used to delegate to entitygraph.DataManager.TraverseGraph,
+// a single recursive-CTE query against Postgres. That method was removed
+// from DataManager entirely when the store dropped per-agency scoping, so
+// GetNeighborhood is now a manual BFS built out of ListRelationships/
+// GetEntity (see traverseNeighborhood in git_impl_graph.go). These tests
+// cover the behavior that traversal must preserve: the starting entity
+// always included, both edge directions followed, the depth clamp to
+// [1, 3], and the 100-node hard cap.
+
+// neighborhoodTestNode creates a bare entity of the given TypeID/name for
+// use as a graph-traversal fixture — GetNeighborhood doesn't care what type
+// an entity is, only how it's connected.
+func neighborhoodTestNode(t *testing.T, m *gitManager, name string) entitygraph.Entity {
+	t.Helper()
+	e, err := m.dm.CreateEntity(context.Background(), entitygraph.CreateEntityRequest{
+		TypeID:     "Node",
+		Properties: map[string]any{"name": name},
+	})
+	if err != nil {
+		t.Fatalf("create node %q: %v", name, err)
+	}
+	return e
+}
+
+// neighborhoodTestEdge links two nodes with a "next" relationship.
+func neighborhoodTestEdge(t *testing.T, m *gitManager, fromID, toID string) {
+	t.Helper()
+	if _, err := m.dm.CreateRelationship(context.Background(), entitygraph.CreateRelationshipRequest{
+		Name: "next", FromID: fromID, ToID: toID,
+	}); err != nil {
+		t.Fatalf("link %s -> %s: %v", fromID, toID, err)
+	}
+}
+
+// neighborhoodTestBranch returns a branch ID satisfying GetNeighborhood's
+// branch-existence check; the traversal itself is branch-agnostic.
+func neighborhoodTestBranch(t *testing.T, m *gitManager) string {
+	t.Helper()
+	ctx := context.Background()
+	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: "neighborhood-fixture"})
+	if err != nil {
+		t.Fatalf("InitRepo: %v", err)
+	}
+	branches, err := m.ListBranches(ctx, repo.ID)
+	if err != nil || len(branches) == 0 {
+		t.Fatalf("ListBranches: %+v (err=%v)", branches, err)
+	}
+	return branches[0].ID
+}
+
+func TestGetNeighborhood_IncludesStartAndBothDirections(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+
+	a := neighborhoodTestNode(t, m, "a")
+	b := neighborhoodTestNode(t, m, "b")
+	c := neighborhoodTestNode(t, m, "c")
+	neighborhoodTestEdge(t, m, a.ID, b.ID) // outbound from a
+	neighborhoodTestEdge(t, m, c.ID, a.ID) // inbound to a
+
+	result, err := m.GetNeighborhood(ctx, branchID, a.ID, 1)
+	if err != nil {
+		t.Fatalf("GetNeighborhood: %v", err)
+	}
+
+	gotIDs := make(map[string]bool, len(result.Nodes))
+	for _, n := range result.Nodes {
+		gotIDs[n.ID] = true
+	}
+	if !gotIDs[a.ID] {
+		t.Error("expected starting entity a in result")
+	}
+	if !gotIDs[b.ID] {
+		t.Error("expected outbound neighbor b in result")
+	}
+	if !gotIDs[c.ID] {
+		t.Error("expected inbound neighbor c in result")
+	}
+	if len(result.Nodes) != 3 {
+		t.Errorf("expected exactly 3 nodes (a, b, c), got %d: %+v", len(result.Nodes), result.Nodes)
+	}
+	if len(result.Edges) != 2 {
+		t.Errorf("expected exactly 2 edges, got %d: %+v", len(result.Edges), result.Edges)
+	}
+}
+
+func TestGetNeighborhood_DepthClamp(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+
+	// Chain: n0 -> n1 -> n2 -> n3 -> n4 (5 nodes, 4 hops).
+	nodes := make([]entitygraph.Entity, 5)
+	for i := range nodes {
+		nodes[i] = neighborhoodTestNode(t, m, fmt.Sprintf("n%d", i))
+	}
+	for i := 0; i < len(nodes)-1; i++ {
+		neighborhoodTestEdge(t, m, nodes[i].ID, nodes[i+1].ID)
+	}
+
+	cases := []struct {
+		name      string
+		depth     int
+		wantNodes int // starting node counts as 1
+	}{
+		{"zero clamps to 1", 0, 2},      // n0, n1
+		{"negative clamps to 1", -5, 2}, // n0, n1
+		{"one stays one", 1, 2},         // n0, n1
+		{"two stays two", 2, 3},         // n0, n1, n2
+		{"three stays three", 3, 4},     // n0, n1, n2, n3
+		{"four clamps to 3", 4, 4},      // n0, n1, n2, n3 (n4 excluded)
+		{"large clamps to 3", 1000, 4},  // n0, n1, n2, n3 (n4 excluded)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := m.GetNeighborhood(ctx, branchID, nodes[0].ID, tc.depth)
+			if err != nil {
+				t.Fatalf("GetNeighborhood depth=%d: %v", tc.depth, err)
+			}
+			if len(result.Nodes) != tc.wantNodes {
+				t.Errorf("depth=%d: got %d nodes, want %d: %+v", tc.depth, len(result.Nodes), tc.wantNodes, result.Nodes)
+			}
+		})
+	}
+}
+
+func TestGetNeighborhood_NodeCapEnforced(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+
+	center := neighborhoodTestNode(t, m, "center")
+	// One more leaf than the cap so the cap is the binding constraint, not
+	// the graph's actual size.
+	const leafCount = neighborhoodMaxNodes + 50
+	for i := 0; i < leafCount; i++ {
+		leaf := neighborhoodTestNode(t, m, fmt.Sprintf("leaf%d", i))
+		neighborhoodTestEdge(t, m, center.ID, leaf.ID)
+	}
+
+	result, err := m.GetNeighborhood(ctx, branchID, center.ID, 3)
+	if err != nil {
+		t.Fatalf("GetNeighborhood: %v", err)
+	}
+	if len(result.Nodes) != neighborhoodMaxNodes {
+		t.Errorf("expected exactly the %d-node cap, got %d", neighborhoodMaxNodes, len(result.Nodes))
+	}
+	for _, e := range result.Edges {
+		if e.FromID != center.ID {
+			t.Errorf("unexpected edge not rooted at center: %+v", e)
+		}
+	}
+}
+
+// TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap guards against a
+// regression where the node-cap short-circuit skipped querying a frontier
+// node's own relationships once the cap filled up earlier in the same BFS
+// round. That node (and its edges' other endpoint) still ended up in the
+// returned vertex set — since it was already marked visited in a prior
+// round — but the edge between them silently vanished from the result
+// because neither endpoint's own ListRelationships call ever ran.
+//
+// Shape: center -> hub1, center -> hub2, center -> witness (round 1, so all
+// three are admitted before any cap pressure exists). hub1 additionally fans
+// out to far more leaves than the remaining node budget (100 - 4 already
+// visited = 96), so processing hub1's own relationships — first in round 2's
+// frontier, since it was discovered first — exhausts the cap by itself.
+// hub2 is second in that frontier; hub2 -> witness is an edge only hub2's
+// own relationship query can reveal (witness has no other edge to hub2, and
+// no other already-processed node's query surfaces it either). Because
+// witness was already visited before round 2 started, the edge's survival
+// doesn't depend on whether hub2 itself makes it under the cap — only on
+// whether hub2 gets queried at all.
+func TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+
+	center := neighborhoodTestNode(t, m, "center")
+	hub1 := neighborhoodTestNode(t, m, "hub1")
+	hub2 := neighborhoodTestNode(t, m, "hub2")
+	witness := neighborhoodTestNode(t, m, "witness")
+	// Creation order fixes discovery order: round 2's frontier becomes
+	// [hub1, hub2, witness] (the fake DataManager lists relationships in
+	// creation order, see fake_datamanager_test.go's relOrder).
+	neighborhoodTestEdge(t, m, center.ID, hub1.ID)
+	neighborhoodTestEdge(t, m, center.ID, hub2.ID)
+	neighborhoodTestEdge(t, m, center.ID, witness.ID)
+
+	// hub1's own edges, witness link first: recorded regardless of the cap
+	// (hub1 is first in the frontier, so it's never at risk of being
+	// skipped), then enough leaves to exhaust the remaining 96-node budget
+	// by itself.
+	neighborhoodTestEdge(t, m, hub1.ID, witness.ID)
+	const fanout = 150 // > 96 remaining budget, so hub1 alone fills the cap
+	for i := 0; i < fanout; i++ {
+		leaf := neighborhoodTestNode(t, m, fmt.Sprintf("hub1-leaf%d", i))
+		neighborhoodTestEdge(t, m, hub1.ID, leaf.ID)
+	}
+
+	// hub2's only edge: the one that must survive being second in a
+	// cap-exhausted frontier.
+	neighborhoodTestEdge(t, m, hub2.ID, witness.ID)
+
+	result, err := m.GetNeighborhood(ctx, branchID, center.ID, 3)
+	if err != nil {
+		t.Fatalf("GetNeighborhood: %v", err)
+	}
+	if len(result.Nodes) != neighborhoodMaxNodes {
+		t.Fatalf("expected the %d-node cap to bind, got %d", neighborhoodMaxNodes, len(result.Nodes))
+	}
+
+	gotIDs := make(map[string]bool, len(result.Nodes))
+	for _, n := range result.Nodes {
+		gotIDs[n.ID] = true
+	}
+	if !gotIDs[hub1.ID] || !gotIDs[hub2.ID] || !gotIDs[witness.ID] {
+		t.Fatalf("expected hub1, hub2 and witness all included (admitted in round 1, before any cap pressure existed): %+v", result.Nodes)
+	}
+
+	hasEdge := func(fromID, toID string) bool {
+		for _, e := range result.Edges {
+			if e.FromID == fromID && e.ToID == toID {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasEdge(hub1.ID, witness.ID) {
+		t.Error("expected hub1 -> witness edge in result (both endpoints included; hub1 is never skipped)")
+	}
+	if !hasEdge(hub2.ID, witness.ID) {
+		t.Error("expected hub2 -> witness edge in result (both endpoints included) — this is the edge the cap short-circuit used to drop")
+	}
+}
+
+func TestGetNeighborhood_BranchNotFound(t *testing.T) {
+	m := newTestManager()
+	a := neighborhoodTestNode(t, m, "a")
+	_, err := m.GetNeighborhood(context.Background(), "nonexistent-branch", a.ID, 1)
+	if !errors.Is(err, ErrBranchNotFound) {
+		t.Fatalf("expected ErrBranchNotFound, got %v", err)
+	}
+}
+
+func TestGetNeighborhood_EntityNotFound(t *testing.T) {
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+	_, err := m.GetNeighborhood(context.Background(), branchID, "nonexistent-entity-and-not-a-path", 1)
+	if !errors.Is(err, entitygraph.ErrEntityNotFound) {
+		t.Fatalf("expected entitygraph.ErrEntityNotFound, got %v", err)
+	}
+}
+
+func TestGetNeighborhood_NoOutboundOrInboundEdges(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager()
+	branchID := neighborhoodTestBranch(t, m)
+	isolated := neighborhoodTestNode(t, m, "isolated")
+
+	result, err := m.GetNeighborhood(ctx, branchID, isolated.ID, 3)
+	if err != nil {
+		t.Fatalf("GetNeighborhood: %v", err)
+	}
+	if len(result.Nodes) != 1 || result.Nodes[0].ID != isolated.ID {
+		t.Fatalf("expected only the isolated starting node, got %+v", result.Nodes)
+	}
+	if len(result.Edges) != 0 {
+		t.Errorf("expected no edges, got %+v", result.Edges)
 	}
 }

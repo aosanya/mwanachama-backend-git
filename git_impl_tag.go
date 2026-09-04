@@ -32,15 +32,14 @@ func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (Tag, 
 	}
 
 	// Validate the target commit exists.
-	commitEntity, err := m.dm.GetEntity(ctx, m.agencyID, req.CommitID)
+	commitEntity, err := m.dm.GetEntity(ctx, req.CommitID)
 	if err != nil {
 		return Tag{}, fmt.Errorf("CreateTag: commit %s: %w", req.CommitID, ErrBranchNotFound)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	tagEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Tag",
+		TypeID: "Tag",
 		Properties: map[string]any{
 			"name":        req.Name,
 			"sha":         entitygraph.StringProp(commitEntity.Properties, "sha"),
@@ -61,10 +60,9 @@ func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (Tag, 
 	// Create the forward has_tag edge (repo → tag) so listTagsByRepo
 	// can locate it via RelationshipFilter{Name:"has_tag", FromID: repoID}.
 	if _, relErr := m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-		AgencyID: m.agencyID,
-		Name:     "has_tag",
-		FromID:   repo.ID,
-		ToID:     tagEntity.ID,
+		Name:   "has_tag",
+		FromID: repo.ID,
+		ToID:   tagEntity.ID,
 	}); relErr != nil {
 		return Tag{}, fmt.Errorf("CreateTag: link has_tag: %w", relErr)
 	}
@@ -75,7 +73,7 @@ func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (Tag, 
 // GetTag retrieves a Tag entity by its entitygraph ID.
 // Returns [ErrTagNotFound] if no tag with that ID exists.
 func (m *gitManager) GetTag(ctx context.Context, tagID string) (Tag, error) {
-	e, err := m.dm.GetEntity(ctx, m.agencyID, tagID)
+	e, err := m.dm.GetEntity(ctx, tagID)
 	if err != nil {
 		return Tag{}, ErrTagNotFound
 	}
@@ -106,10 +104,10 @@ func (m *gitManager) ListTags(ctx context.Context, repoID string) ([]Tag, error)
 // DeleteTag removes a Tag entity.
 // Returns [ErrTagNotFound] if no tag with that ID exists.
 func (m *gitManager) DeleteTag(ctx context.Context, tagID string) error {
-	if _, err := m.dm.GetEntity(ctx, m.agencyID, tagID); err != nil {
+	if _, err := m.dm.GetEntity(ctx, tagID); err != nil {
 		return ErrTagNotFound
 	}
-	if err := m.dm.DeleteEntity(ctx, m.agencyID, tagID); err != nil {
+	if err := m.dm.DeleteEntity(ctx, tagID); err != nil {
 		return fmt.Errorf("DeleteTag: %w", err)
 	}
 	return nil
@@ -119,16 +117,15 @@ func (m *gitManager) DeleteTag(ctx context.Context, tagID string) error {
 // given repositoryID.
 func (m *gitManager) listTagsByRepo(ctx context.Context, repositoryID string) ([]entitygraph.Entity, error) {
 	rels, err := m.dm.ListRelationships(ctx, entitygraph.RelationshipFilter{
-		AgencyID: m.agencyID,
-		Name:     "has_tag",
-		FromID:   repositoryID,
+		Name:   "has_tag",
+		FromID: repositoryID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]entitygraph.Entity, 0, len(rels))
 	for _, r := range rels {
-		e, err := m.dm.GetEntity(ctx, m.agencyID, r.ToID)
+		e, err := m.dm.GetEntity(ctx, r.ToID)
 		if err != nil {
 			continue
 		}

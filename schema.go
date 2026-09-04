@@ -2,9 +2,8 @@
 //
 // This file exposes [DefaultGitSchema], which returns the fixed
 // [schema.Schema] for mwanachama-backend-git. Wiring code in mwanachama-backend-api-gateway
-// seeds this schema per agency at startup via SchemaManager.SetSchema (set
-// s.AgencyID before calling; DefaultGitSchema itself returns an
-// agency-agnostic template).
+// seeds this schema at startup via SchemaManager.SetSchema. Each deployment
+// is single-tenant, so the schema carries no agency scoping.
 //
 // The schema declares eight TypeDefinitions:
 //   - Agency         — root entity; one per agency ID (mutable)
@@ -99,7 +98,7 @@ func DefaultGitSchema() schema.Schema {
 				DisplayName:       "Repository",
 				StorageCollection: "git_repositories",
 				Properties: []schema.PropertyDefinition{
-					// name is the human-readable label, e.g. the agency ID used as repo key.
+					// name is the human-readable label used as the repo key.
 					{Name: "name", Type: schema.PropertyTypeString, Required: true},
 					{Name: "description", Type: schema.PropertyTypeString},
 					// default_branch is the name of the primary branch (e.g. "main").
@@ -563,8 +562,6 @@ func DefaultGitSchema() schema.Schema {
 				// One entity per import request; keyed by a UUID assigned at call time.
 				// Status transitions: pending → running → completed | failed | cancelled.
 				Properties: []schema.PropertyDefinition{
-					// agency_id scopes this job to the owning agency.
-					{Name: "agency_id", Type: schema.PropertyTypeString, Required: true},
 					// source_url is the public HTTPS URL of the remote repository being imported.
 					{Name: "source_url", Type: schema.PropertyTypeString, Required: true},
 					// status is one of: "pending", "running", "completed", "failed", "cancelled".
@@ -584,8 +581,6 @@ func DefaultGitSchema() schema.Schema {
 				// keyed by a UUID assigned at call time.
 				// Status transitions: pending → running → completed | failed.
 				Properties: []schema.PropertyDefinition{
-					// agency_id scopes this job to the owning agency.
-					{Name: "agency_id", Type: schema.PropertyTypeString, Required: true},
 					// repo_id is the entity ID of the Repository being fetched.
 					{Name: "repo_id", Type: schema.PropertyTypeString, Required: true},
 					// branch_name is the short branch name being fetched, e.g. "main".

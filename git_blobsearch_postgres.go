@@ -60,9 +60,9 @@ CREATE INDEX IF NOT EXISTS %[1]s_blob_fts_idx
 
 // Search implements [BlobSearcher]. It matches query (via
 // plainto_tsquery, so callers pass plain search terms rather than
-// tsquery syntax) against each Blob's name and content, scoped to
-// agencyID, and returns results ordered by descending relevance.
-func (s *PostgresBlobSearcher) Search(ctx context.Context, agencyID, query string, limit int) ([]BlobSearchResult, error) {
+// tsquery syntax) against each Blob's name and content, and returns results
+// ordered by descending relevance.
+func (s *PostgresBlobSearcher) Search(ctx context.Context, query string, limit int) ([]BlobSearchResult, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -76,24 +76,23 @@ SELECT
     ts_headline(
         'english',
         coalesce(properties->>'content', ''),
-        plainto_tsquery('english', $2),
+        plainto_tsquery('english', $1),
         'MaxFragments=1,MaxWords=20,MinWords=5,ShortWord=3'
     ) AS snippet,
     ts_rank(
         to_tsvector('english', coalesce(properties->>'name', '') || ' ' || coalesce(properties->>'content', '')),
-        plainto_tsquery('english', $2)
+        plainto_tsquery('english', $1)
     ) AS score
 FROM %s
-WHERE agency_id = $1
-  AND type_id = 'Blob'
+WHERE type_id = 'Blob'
   AND NOT deleted
   AND to_tsvector('english', coalesce(properties->>'name', '') || ' ' || coalesce(properties->>'content', ''))
-      @@ plainto_tsquery('english', $2)
+      @@ plainto_tsquery('english', $1)
 ORDER BY score DESC
-LIMIT $3
+LIMIT $2
 `, s.table)
 
-	rows, err := s.db.QueryContext(ctx, q, agencyID, query, limit)
+	rows, err := s.db.QueryContext(ctx, q, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("PostgresBlobSearcher.Search: %w", err)
 	}

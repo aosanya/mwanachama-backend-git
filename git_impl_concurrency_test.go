@@ -54,7 +54,7 @@ func TestGIT011_ConcurrentMerges(t *testing.T) {
 
 // TestBUG09020_ConcurrentWriteFilesAllLand verifies the BUG-09-020 fix: when
 // N goroutines fire WriteFile against the same branch in parallel, the
-// per-agency RefLocker serialises them so every commit chains onto the
+// RefLocker serialises them so every commit chains onto the
 // previous one and every file ends up reachable from the branch HEAD.
 // Without the lock, each goroutine reads the same parent HEAD, builds a
 // sibling commit, and the unsynchronised advanceBranchHead leaves the
@@ -141,14 +141,14 @@ func TestGIT011_AdvanceBranchHead_StaleHeadReturnsConflict(t *testing.T) {
 	const actualHead = "commit-current"
 
 	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Branch",
+		TypeID:     "Branch",
 		Properties: map[string]any{"head_commit_id": actualHead},
 	})
 	if err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
 	commitEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Commit",
+		TypeID:     "Commit",
 		Properties: map[string]any{"sha": "abc123"},
 	})
 	if err != nil {
@@ -170,14 +170,14 @@ func TestGIT011_AdvanceBranchHead_MatchingHeadSucceeds(t *testing.T) {
 	const currentHead = "commit-current2"
 
 	branchEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Branch",
+		TypeID:     "Branch",
 		Properties: map[string]any{"head_commit_id": currentHead},
 	})
 	if err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
 	commitEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID, TypeID: "Commit",
+		TypeID:     "Commit",
 		Properties: map[string]any{"sha": "def456"},
 	})
 	if err != nil {

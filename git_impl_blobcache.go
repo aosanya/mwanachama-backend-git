@@ -46,7 +46,7 @@ func (m *gitManager) loadBlobContentFromBareClone(ctx context.Context, branch Br
 		return "", "", fmt.Errorf("blob entity %s has no SHA", blob.ID)
 	}
 
-	repoEntity, err := m.dm.GetEntity(ctx, m.agencyID, branch.RepositoryID)
+	repoEntity, err := m.dm.GetEntity(ctx, branch.RepositoryID)
 	if err != nil {
 		log.Printf("[loadBlobContentFromBareClone] GetEntity repoID=%s error: %v", branch.RepositoryID, err)
 		return "", "", fmt.Errorf("get repository entity %s: %w", branch.RepositoryID, err)

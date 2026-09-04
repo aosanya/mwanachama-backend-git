@@ -52,7 +52,7 @@ var fetchJobs = make(map[string]fetchCancelEntry)
 // if the branch status is "fetching" or "fetched".
 func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (FetchBranchJob, error) {
 	// 1. Fetch the Branch entity by ID.
-	branchEntity, err := m.dm.GetEntity(ctx, m.agencyID, req.BranchID)
+	branchEntity, err := m.dm.GetEntity(ctx, req.BranchID)
 	if err != nil {
 		if errors.Is(err, entitygraph.ErrEntityNotFound) {
 			return FetchBranchJob{}, fmt.Errorf("FetchBranch: branch %s not found", req.BranchID)
@@ -76,13 +76,11 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 	// existed on the import origin.
 	now := time.Now().UTC().Format(time.RFC3339)
 	if headCommitID != "" {
-		log.Printf("[fetchbranch][%s] branch=%q: short-circuit — head_commit_id=%q already set, marking fetched",
-			m.agencyID, branchName, headCommitID)
+		log.Printf("[fetchbranch] branch=%q: short-circuit — head_commit_id=%q already set, marking fetched",
+			branchName, headCommitID)
 		jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			AgencyID: m.agencyID,
-			TypeID:   "FetchBranchJob",
+			TypeID: "FetchBranchJob",
 			Properties: map[string]any{
-				"agency_id":     m.agencyID,
 				"repo_id":       req.RepoID,
 				"branch_name":   branchName,
 				"status":        fetchJobStatusCompleted,
@@ -94,7 +92,7 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 		if err != nil {
 			return FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job entity: %w", req.BranchID, err)
 		}
-		if _, err := m.dm.UpdateEntity(ctx, m.agencyID, req.BranchID, entitygraph.UpdateEntityRequest{
+		if _, err := m.dm.UpdateEntity(ctx, req.BranchID, entitygraph.UpdateEntityRequest{
 			Properties: map[string]any{
 				"status":     branchStatusFetched,
 				"updated_at": now,
@@ -107,10 +105,8 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 
 	// 4. Create the FetchBranchJob entity.
 	jobEntity, err := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "FetchBranchJob",
+		TypeID: "FetchBranchJob",
 		Properties: map[string]any{
-			"agency_id":     m.agencyID,
 			"repo_id":       req.RepoID,
 			"branch_name":   branchName,
 			"status":        fetchJobStatusPending,
@@ -126,7 +122,7 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 	job := fetchJobFromEntity(jobEntity)
 
 	// 5. Transition Branch status to "fetching".
-	if _, err := m.dm.UpdateEntity(ctx, m.agencyID, req.BranchID, entitygraph.UpdateEntityRequest{
+	if _, err := m.dm.UpdateEntity(ctx, req.BranchID, entitygraph.UpdateEntityRequest{
 		Properties: map[string]any{
 			"status":     branchStatusFetching,
 			"updated_at": now,
@@ -149,7 +145,7 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (F
 // GetFetchBranchStatus returns the current state of a fetch job.
 // Returns [ErrImportJobNotFound] if no job with the given ID exists.
 func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (FetchBranchJob, error) {
-	entity, err := m.dm.GetEntity(ctx, m.agencyID, jobID)
+	entity, err := m.dm.GetEntity(ctx, jobID)
 	if err != nil {
 		if errors.Is(err, entitygraph.ErrEntityNotFound) {
 			return FetchBranchJob{}, ErrImportJobNotFound
@@ -173,7 +169,7 @@ func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (Fe
 //  10. Publish [TopicBranchFetched].
 func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID, branchName string) {
 	runStart := time.Now()
-	log.Printf("[fetchbranch][%s] job=%s branch=%q repoID=%s: starting", m.agencyID, jobID, branchName, repoID)
+	log.Printf("[fetchbranch] job=%s branch=%q repoID=%s: starting", jobID, branchName, repoID)
 	defer func() {
 		fetchJobsMu.Lock()
 		delete(fetchJobs, jobID)
@@ -181,7 +177,7 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 	}()
 
 	fail := func(msg string) {
-		log.Printf("[fetchbranch][%s] job=%s branch=%q: FAILED — %s (elapsed %s)", m.agencyID, jobID, branchName, msg, time.Since(runStart))
+		log.Printf("[fetchbranch] job=%s branch=%q: FAILED — %s (elapsed %s)", jobID, branchName, msg, time.Since(runStart))
 		bg := context.Background()
 		_ = m.updateFetchJobStatus(bg, jobID, fetchJobStatusFailed, msg)
 		_ = m.updateBranchFetchStatus(bg, branchID, branchStatusFetchFailed, msg)
@@ -192,28 +188,28 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 	}
 
 	t0 := time.Now()
-	repoEntity, err := m.dm.GetEntity(ctx, m.agencyID, repoID)
+	repoEntity, err := m.dm.GetEntity(ctx, repoID)
 	if err != nil {
 		fail(fmt.Sprintf("get repo entity %s: %v", repoID, err))
 		return
 	}
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: GetEntity(repo) took %s", m.agencyID, jobID, branchName, time.Since(t0))
+	log.Printf("[fetchbranch] job=%s branch=%q: GetEntity(repo) took %s", jobID, branchName, time.Since(t0))
 	sourceURL, _ := repoEntity.Properties["source_url"].(string)
 
 	if sourceURL == "" {
-		branchEnt, berr := m.dm.GetEntity(ctx, m.agencyID, branchID)
+		branchEnt, berr := m.dm.GetEntity(ctx, branchID)
 		if berr == nil {
 			sourceURL, _ = branchEnt.Properties["source_url"].(string)
 		}
 	}
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: source_url=%q", m.agencyID, jobID, branchName, sourceURL)
+	log.Printf("[fetchbranch] job=%s branch=%q: source_url=%q", jobID, branchName, sourceURL)
 
 	// Perform a fresh full single-branch clone so we have the complete commit
 	// history without shallow-object problems.
 	t0 = time.Now()
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: starting deepenClone (full non-shallow single-branch)", m.agencyID, jobID, branchName)
+	log.Printf("[fetchbranch] job=%s branch=%q: starting deepenClone (full non-shallow single-branch)", jobID, branchName)
 	repo, newCloneDir, err := m.deepenClone(ctx, branchName, sourceURL)
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: deepenClone done in %s err=%v newCloneDir=%s", m.agencyID, jobID, branchName, time.Since(t0), err, newCloneDir)
+	log.Printf("[fetchbranch] job=%s branch=%q: deepenClone done in %s err=%v newCloneDir=%s", jobID, branchName, time.Since(t0), err, newCloneDir)
 	if err != nil {
 		fail(fmt.Sprintf("full clone branch=%q: %v", branchName, err))
 		return
@@ -221,27 +217,27 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 
 	// Persist the new bare_clone_path back onto the Repository entity so that
 	// loadBlobContentFromBareClone always opens the correct (fully-hydrated) clone.
-	if _, updateErr := m.dm.UpdateEntity(ctx, m.agencyID, repoID, entitygraph.UpdateEntityRequest{
+	if _, updateErr := m.dm.UpdateEntity(ctx, repoID, entitygraph.UpdateEntityRequest{
 		Properties: map[string]any{
 			"bare_clone_path": newCloneDir,
 			"updated_at":      time.Now().UTC().Format(time.RFC3339),
 		},
 	}); updateErr != nil {
-		log.Printf("[fetchbranch][%s] job=%s branch=%q: WARNING failed to update bare_clone_path to %s: %v", m.agencyID, jobID, branchName, newCloneDir, updateErr)
+		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to update bare_clone_path to %s: %v", jobID, branchName, newCloneDir, updateErr)
 	} else {
-		log.Printf("[fetchbranch][%s] job=%s branch=%q: updated bare_clone_path to %s", m.agencyID, jobID, branchName, newCloneDir)
+		log.Printf("[fetchbranch] job=%s branch=%q: updated bare_clone_path to %s", jobID, branchName, newCloneDir)
 	}
 
 	t0 = time.Now()
 	ref, err := findBranchRef(repo, branchName)
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: findBranchRef took %s err=%v", m.agencyID, jobID, branchName, time.Since(t0), err)
+	log.Printf("[fetchbranch] job=%s branch=%q: findBranchRef took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("find ref for branch=%q: %v", branchName, err))
 		return
 	}
 
 	t0 = time.Now()
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: starting walkCommitsOnly", m.agencyID, jobID, branchName)
+	log.Printf("[fetchbranch] job=%s branch=%q: starting walkCommitsOnly", jobID, branchName)
 	seenSHAs := make(map[string]bool)
 	if err := m.walkCommitsOnly(ctx, repo, ref, seenSHAs); err != nil {
 		if ctx.Err() != nil {
@@ -253,27 +249,27 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 		fail(fmt.Sprintf("walk commits branch=%q: %v", branchName, err))
 		return
 	}
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: walkCommitsOnly done in %s — %d commit(s)", m.agencyID, jobID, branchName, time.Since(t0), len(seenSHAs))
+	log.Printf("[fetchbranch] job=%s branch=%q: walkCommitsOnly done in %s — %d commit(s)", jobID, branchName, time.Since(t0), len(seenSHAs))
 
 	t0 = time.Now()
 	tipCommit, err := repo.CommitObject(ref.Hash())
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: CommitObject took %s err=%v", m.agencyID, jobID, branchName, time.Since(t0), err)
+	log.Printf("[fetchbranch] job=%s branch=%q: CommitObject took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("resolve tip commit branch=%q sha=%q: %v", branchName, ref.Hash().String(), err))
 		return
 	}
 	t0 = time.Now()
 	tipTree, err := tipCommit.Tree()
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: tipCommit.Tree() took %s err=%v", m.agencyID, jobID, branchName, time.Since(t0), err)
+	log.Printf("[fetchbranch] job=%s branch=%q: tipCommit.Tree() took %s err=%v", jobID, branchName, time.Since(t0), err)
 	if err != nil {
 		fail(fmt.Sprintf("resolve tip tree branch=%q: %v", branchName, err))
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	t0 = time.Now()
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: starting upsertTreeMetadataWithEdges", m.agencyID, jobID, branchName)
+	log.Printf("[fetchbranch] job=%s branch=%q: starting upsertTreeMetadataWithEdges", jobID, branchName)
 	rootTreeID, err := m.upsertTreeMetadataWithEdges(ctx, repo, tipTree, "", now)
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: upsertTreeMetadataWithEdges done in %s err=%v rootTreeID=%s", m.agencyID, jobID, branchName, time.Since(t0), err, rootTreeID)
+	log.Printf("[fetchbranch] job=%s branch=%q: upsertTreeMetadataWithEdges done in %s err=%v rootTreeID=%s", jobID, branchName, time.Since(t0), err, rootTreeID)
 	if err != nil {
 		fail(fmt.Sprintf("walk tip tree branch=%q: %v", branchName, err))
 		return
@@ -282,20 +278,18 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 	tipSHA := ref.Hash().String()
 	t0 = time.Now()
 	headCommits, _ := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-		AgencyID:   m.agencyID,
 		TypeID:     "Commit",
 		Properties: map[string]any{"sha": tipSHA},
 	})
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: ListEntities(Commit sha=%s) took %s found=%d", m.agencyID, jobID, branchName, tipSHA[:8], time.Since(t0), len(headCommits))
+	log.Printf("[fetchbranch] job=%s branch=%q: ListEntities(Commit sha=%s) took %s found=%d", jobID, branchName, tipSHA[:8], time.Since(t0), len(headCommits))
 	if len(headCommits) > 0 {
 		commitID := headCommits[0].ID
 		// Wire commit → has_tree → root tree edge.
 		if rootTreeID != "" {
 			_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-				AgencyID: m.agencyID,
-				Name:     "has_tree",
-				FromID:   commitID,
-				ToID:     rootTreeID,
+				Name:   "has_tree",
+				FromID: commitID,
+				ToID:   rootTreeID,
 			})
 		}
 		// Advance branch HEAD pointer.
@@ -305,13 +299,13 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 	// Mark branch fetched and job completed.
 	bg := context.Background()
 	if err := m.updateBranchFetchStatus(bg, branchID, branchStatusFetched, ""); err != nil {
-		log.Printf("[fetchbranch][%s] job=%s branch=%q: WARNING failed to mark branch fetched: %v", m.agencyID, jobID, branchName, err)
+		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to mark branch fetched: %v", jobID, branchName, err)
 	}
 	if err := m.updateFetchJobStatus(bg, jobID, fetchJobStatusCompleted, ""); err != nil {
-		log.Printf("[fetchbranch][%s] job=%s branch=%q: WARNING failed to mark job completed: %v", m.agencyID, jobID, branchName, err)
+		log.Printf("[fetchbranch] job=%s branch=%q: WARNING failed to mark job completed: %v", jobID, branchName, err)
 	}
 	m.publish(bg, TopicBranchFetched, BranchFetchedPayload{JobID: jobID, BranchID: branchID})
-	log.Printf("[fetchbranch][%s] job=%s branch=%q: ALL DONE — total elapsed %s", m.agencyID, jobID, branchName, time.Since(runStart))
+	log.Printf("[fetchbranch] job=%s branch=%q: ALL DONE — total elapsed %s", jobID, branchName, time.Since(runStart))
 }
 
 // deepenClone performs a fresh full (non-shallow) single-branch clone of
@@ -327,7 +321,7 @@ func (m *gitManager) deepenClone(ctx context.Context, branchName, sourceURL stri
 	if sourceURL == "" {
 		return nil, "", fmt.Errorf("deepenClone: source_url is empty for branch %q", branchName)
 	}
-	dir, err := cloneRootDir(m.agencyID, branchName+"-full")
+	dir, err := cloneRootDir(branchName + "-full")
 	if err != nil {
 		return nil, "", fmt.Errorf("deepenClone: create temp dir: %w", err)
 	}
@@ -372,8 +366,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 		commitCount++
 		t0 := time.Now()
 		_, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-			AgencyID: m.agencyID,
-			TypeID:   "Commit",
+			TypeID: "Commit",
 			Properties: map[string]any{
 				"sha":             sha,
 				"message":         c.Message,
@@ -387,7 +380,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 			},
 		})
 		if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-			log.Printf("[fetchbranch][%s] SLOW CreateEntity(Commit #%d sha=%s) took %s", m.agencyID, commitCount, sha[:8], elapsed)
+			log.Printf("[fetchbranch] SLOW CreateEntity(Commit #%d sha=%s) took %s", commitCount, sha[:8], elapsed)
 		}
 		if createErr != nil && !errors.Is(createErr, entitygraph.ErrEntityAlreadyExists) {
 			return fmt.Errorf("create commit %s: %w", sha, createErr)
@@ -402,11 +395,10 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 // Recursive for subdirectories. ErrEntityAlreadyExists is skipped.
 func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogit.Repository, tree *gogitobject.Tree, pathPrefix, now string) (string, error) {
 	treeSHA := tree.Hash.String()
-	log.Printf("[upsertTree][%s] path=%q sha=%s entries=%d", m.agencyID, pathPrefix, treeSHA[:8], len(tree.Entries))
+	log.Printf("[upsertTree] path=%q sha=%s entries=%d", pathPrefix, treeSHA[:8], len(tree.Entries))
 
 	treeEntity, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Tree",
+		TypeID: "Tree",
 		Properties: map[string]any{
 			"sha":        treeSHA,
 			"path":       pathPrefix,
@@ -421,7 +413,6 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 		treeID = treeEntity.ID
 	} else {
 		existing, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			AgencyID:   m.agencyID,
 			TypeID:     "Tree",
 			Properties: map[string]any{"sha": treeSHA},
 		})
@@ -447,10 +438,9 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			}
 			if treeID != "" && blobID != "" {
 				_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-					AgencyID: m.agencyID,
-					Name:     "has_blob",
-					FromID:   treeID,
-					ToID:     blobID,
+					Name:   "has_blob",
+					FromID: treeID,
+					ToID:   blobID,
 				})
 			}
 		} else {
@@ -458,7 +448,7 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			if err != nil {
 				// Subtree has no raw data (import-job metadata-only entity) —
 				// skip recursive walk; it will be deepened by a later fetch.
-				log.Printf("[upsertTree][%s] SKIP subtree path=%q sha=%s: TreeObject err=%v", m.agencyID, entryPath, entry.Hash.String()[:8], err)
+				log.Printf("[upsertTree] SKIP subtree path=%q sha=%s: TreeObject err=%v", entryPath, entry.Hash.String()[:8], err)
 				continue
 			}
 			subTreeID, err := m.upsertTreeMetadataWithEdges(ctx, repo, subTree, entryPath, now)
@@ -467,10 +457,9 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			}
 			if treeID != "" && subTreeID != "" {
 				_, _ = m.dm.CreateRelationship(ctx, entitygraph.CreateRelationshipRequest{
-					AgencyID: m.agencyID,
-					Name:     "has_subtree",
-					FromID:   treeID,
-					ToID:     subTreeID,
+					Name:   "has_subtree",
+					FromID: treeID,
+					ToID:   subTreeID,
 				})
 			}
 		}
@@ -497,7 +486,7 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 		}
 	}
 	if elapsed := time.Since(t0); elapsed > 100*time.Millisecond {
-		log.Printf("[fetchbranch][%s] SLOW BlobObject(%s path=%q) took %s", m.agencyID, blobSHA[:8], fullPath, elapsed)
+		log.Printf("[fetchbranch] SLOW BlobObject(%s path=%q) took %s", blobSHA[:8], fullPath, elapsed)
 	}
 
 	ext := strings.TrimPrefix(filepath.Ext(entry.Name), ".")
@@ -505,8 +494,7 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 
 	t0 = time.Now()
 	blobEntity, createErr := m.dm.CreateEntity(ctx, entitygraph.CreateEntityRequest{
-		AgencyID: m.agencyID,
-		TypeID:   "Blob",
+		TypeID: "Blob",
 		Properties: map[string]any{
 			"sha":        blobSHA,
 			"path":       fullPath,
@@ -519,7 +507,7 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 		},
 	})
 	if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-		log.Printf("[fetchbranch][%s] SLOW CreateEntity(Blob sha=%s path=%q) took %s", m.agencyID, blobSHA[:8], fullPath, elapsed)
+		log.Printf("[fetchbranch] SLOW CreateEntity(Blob sha=%s path=%q) took %s", blobSHA[:8], fullPath, elapsed)
 	}
 	var blobID string
 	if createErr != nil && !errors.Is(createErr, entitygraph.ErrEntityAlreadyExists) {
@@ -530,12 +518,11 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 	} else {
 		t0 = time.Now()
 		existing, listErr := m.dm.ListEntities(ctx, entitygraph.EntityFilter{
-			AgencyID:   m.agencyID,
 			TypeID:     "Blob",
 			Properties: map[string]any{"sha": blobSHA},
 		})
 		if elapsed := time.Since(t0); elapsed > 200*time.Millisecond {
-			log.Printf("[fetchbranch][%s] SLOW ListEntities(Blob sha=%s) took %s", m.agencyID, blobSHA[:8], elapsed)
+			log.Printf("[fetchbranch] SLOW ListEntities(Blob sha=%s) took %s", blobSHA[:8], elapsed)
 		}
 		if listErr == nil && len(existing) > 0 {
 			blobID = existing[0].ID
@@ -546,7 +533,7 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 
 // updateFetchJobStatus transitions a FetchBranchJob entity to the given status.
 func (m *gitManager) updateFetchJobStatus(ctx context.Context, jobID, status, errMsg string) error {
-	_, err := m.dm.UpdateEntity(ctx, m.agencyID, jobID, entitygraph.UpdateEntityRequest{
+	_, err := m.dm.UpdateEntity(ctx, jobID, entitygraph.UpdateEntityRequest{
 		Properties: map[string]any{
 			"status":        status,
 			"error_message": errMsg,
@@ -565,7 +552,7 @@ func (m *gitManager) updateBranchFetchStatus(ctx context.Context, branchID, stat
 	if errMsg != "" {
 		props["error_message"] = errMsg
 	}
-	_, err := m.dm.UpdateEntity(ctx, m.agencyID, branchID, entitygraph.UpdateEntityRequest{
+	_, err := m.dm.UpdateEntity(ctx, branchID, entitygraph.UpdateEntityRequest{
 		Properties: props,
 	})
 	return err
@@ -579,7 +566,6 @@ func fetchJobFromEntity(e entitygraph.Entity) FetchBranchJob {
 	}
 	return FetchBranchJob{
 		ID:           e.ID,
-		AgencyID:     str("agency_id"),
 		RepoID:       str("repo_id"),
 		BranchName:   str("branch_name"),
 		Status:       str("status"),
