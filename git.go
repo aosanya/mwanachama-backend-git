@@ -20,6 +20,19 @@ import (
 	"github.com/aosanya/mwanachama-backend-shared/events"
 )
 
+// Repository, Branch, MergeRequest, Tag, Keyword, ImportJob and
+// FetchBranchJob are aliases of their models. counterparts, so a caller
+// needs only this package's import, never models's directly.
+type (
+	Repository     = models.Repository
+	Branch         = models.Branch
+	MergeRequest   = models.MergeRequest
+	Tag            = models.Tag
+	Keyword        = models.Keyword
+	ImportJob      = models.ImportJob
+	FetchBranchJob = models.FetchBranchJob
+)
+
 // GitManager is the primary interface for Git-like repository management.
 // HTTP handlers hold this interface — never the concrete type.
 //
