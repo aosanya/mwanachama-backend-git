@@ -7,11 +7,10 @@ import (
 )
 
 // TableNames configures which physical tables a [gitManager] (the root
-// package's private struct) reads and writes. Sixteen tables: nine node
-// tables (one per domain entity type) and four join tables replacing the
+// package's private struct) reads and writes. Fifteen tables: eight node
+// tables (one per domain entity type) and join tables replacing the
 // old entitygraph relationships.
 type TableNames struct {
-	Agencies        string
 	Repositories    string
 	Branches        string
 	MergeRequests   string
@@ -34,7 +33,6 @@ type TableNames struct {
 // git_agencies, git_repositories, and so on.
 func DefaultTableNames(instance string) TableNames {
 	return TableNames{
-		Agencies:        instance + "_agencies",
 		Repositories:    instance + "_repositories",
 		Branches:        instance + "_branches",
 		MergeRequests:   instance + "_merge_requests",
@@ -53,7 +51,7 @@ func DefaultTableNames(instance string) TableNames {
 	}
 }
 
-// Migrate creates or updates all sixteen tables named by t, via GORM's
+// Migrate creates or updates all fifteen tables named by t, via GORM's
 // AutoMigrate scoped to each table name in turn. Callers run this once at
 // startup (or in test setup) before constructing a GitManager with the same
 // db and t. On Postgres, also (re)creates the blob full-text-search index —
@@ -64,7 +62,6 @@ func Migrate(db *gorm.DB, t TableNames) error {
 		name  string
 		model any
 	}{
-		{t.Agencies, &AgencyRow{}},
 		{t.Repositories, &RepositoryRow{}},
 		{t.Branches, &BranchRow{}},
 		{t.MergeRequests, &MergeRequestRow{}},

@@ -9,14 +9,12 @@ import (
 
 // RepositoryRow is the GORM row for a [models.Repository].
 //
-// AgencyID replaces the old has_repository/belongs_to_agency edge pair.
 // BareClonePath is a row-only field (not on the domain type): the local
 // filesystem path of the bare shallow clone created by lazy import v2,
 // reused by FetchBranch/loadBlobContentFromBareClone.
 type RepositoryRow struct {
-	ID            string  `gorm:"primaryKey"`
-	AgencyID      *string `gorm:"index"`
-	Name          string  `gorm:"index"`
+	ID            string `gorm:"primaryKey"`
+	Name          string `gorm:"index"`
 	Description   string
 	DefaultBranch string
 	BareClonePath string

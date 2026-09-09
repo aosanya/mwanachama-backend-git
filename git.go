@@ -1,6 +1,6 @@
 // git.go defines the flat [GitManager] interface for mwanachama-backend-git.
 //
-// A single Agency/AI-aligned interface: all domain operations — repository
+// A single flat interface: all domain operations — repository
 // lifecycle, branches, tags, merge requests, file writes, and history — are
 // methods on [GitManager]. Callers (an HTTP handler in mwanachama-backend-api-gateway)
 // hold the interface, never the concrete type. The method set is unchanged
@@ -36,8 +36,8 @@ type (
 // GitManager is the primary interface for Git-like repository management.
 // HTTP handlers hold this interface — never the concrete type.
 //
-// Each GitManager instance is scoped to a single deployment's database (one
-// deployment per agency); there is no in-process multi-tenancy.
+// Each GitManager instance is scoped to a single deployment's database;
+// there is no in-process multi-tenancy.
 //
 // Implementations must be safe for concurrent use.
 type GitManager interface {
@@ -416,7 +416,7 @@ type gitManager struct {
 	searcher  BlobSearcher     // optional; nil = SearchBlobs returns empty
 }
 
-// NewGitManager constructs a [GitManager] reading and writing the sixteen
+// NewGitManager constructs a [GitManager] reading and writing the fifteen
 // tables named by t (see [DefaultTableNames]). Callers must run [Migrate]
 // against the same db and t before use.
 //

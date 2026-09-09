@@ -125,17 +125,16 @@ SELECT id FROM c ORDER BY depth`, t.CommitParents)
 	return ids, nil
 }
 
-// ResolveNodeType probes all nine node tables for id, in a fixed order, and
+// ResolveNodeType probes all eight node tables for id, in a fixed order, and
 // returns the TypeID name of whichever table contains a non-deleted row
 // with that id. Returns found=false if none do. Replaces the old
 // shared-entities-table GetEntity lookup, which had one ID space across all
 // types; here each type has its own table, so resolving "what type is this
-// ID" costs up to nine indexed existence checks instead of one lookup — a
+// ID" costs up to eight indexed existence checks instead of one lookup — a
 // GetNeighborhood/resolveEntityID-only cost, paid once per call, not once
 // per BFS level.
 func ResolveNodeType(db *gorm.DB, t TableNames, id string) (typeID string, found bool, err error) {
 	checks := []struct{ typeID, table string }{
-		{"Agency", t.Agencies},
 		{"Repository", t.Repositories},
 		{"Branch", t.Branches},
 		{"MergeRequest", t.MergeRequests},
@@ -157,7 +156,7 @@ func ResolveNodeType(db *gorm.DB, t TableNames, id string) (typeID string, found
 	return "", false, nil
 }
 
-// edgeShape describes one of the sixteen fixed relationship shapes
+// edgeShape describes one of the fixed relationship shapes
 // [NeighborhoodEdges] can surface — see this repo's CLAUDE.md for the full
 // catalogue this flattens entitygraph's generic relationships table into.
 type edgeShape struct {
@@ -166,7 +165,7 @@ type edgeShape struct {
 	label          string
 }
 
-// NeighborhoodEdges returns every edge, across all sixteen known shapes,
+// NeighborhoodEdges returns every edge, across all known shapes,
 // touching at least one ID in frontier — either as the FromID or the ToID.
 // This is the flattened-schema replacement for entitygraph's generic
 // "list relationships by FromID or ToID" query: since there is no longer one
@@ -174,7 +173,6 @@ type edgeShape struct {
 // (small, fixed cost — not per-vertex) rather than a single generic lookup.
 func NeighborhoodEdges(db *gorm.DB, t TableNames, frontier []string) ([]RawEdge, error) {
 	shapes := []edgeShape{
-		{t.Repositories, "agency_id", "id", "has_repository"},
 		{t.Branches, "repository_id", "id", "has_branch"},
 		{t.Tags, "repository_id", "id", "has_tag"},
 		{t.Commits, "repository_id", "id", "has_commit"},

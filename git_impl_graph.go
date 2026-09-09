@@ -1,7 +1,7 @@
 // git_impl_graph.go implements the graph query methods on [gitManager]:
 //
 //   - [GitManager.GetNeighborhood] — bounded subgraph traversal (depth 1-3,
-//     100-node hard cap) over the closed catalogue of sixteen relationship
+//     100-node hard cap) over the closed catalogue of relationship
 //     shapes the flattened schema can express (see gormstore.NeighborhoodEdges).
 //
 //   - [GitManager.SearchByKeywords] — keyword-driven Blob discovery with
@@ -117,7 +117,7 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 }
 
 // resolveEntityID returns the canonical row ID. If entityID already names a
-// row in one of the nine node tables it is returned as-is. Otherwise, the
+// row in one of the eight node tables it is returned as-is. Otherwise, the
 // method attempts to find a Blob row whose Path matches entityID.
 // Returns [ErrEntityNotFound] if neither resolves.
 func (m *gitManager) resolveEntityID(ctx context.Context, entityID string) (string, error) {
@@ -169,7 +169,7 @@ func buildGraphResult(nodes []GraphNode, edges []GraphEdge, cap int) GraphResult
 	return GraphResult{Nodes: nodes, Edges: filtered}
 }
 
-// hydrateNodes fetches full row data for ids across all nine node tables and
+// hydrateNodes fetches full row data for ids across all eight node tables and
 // returns them as [GraphNode]s in the same order as ids — a row missing by
 // the time hydration runs (e.g. deleted between the edge scan and here) is
 // silently dropped, matching the entitygraph-era race behavior.
@@ -179,16 +179,6 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 	}
 	byID := make(map[string]GraphNode, len(ids))
 	db := m.db.WithContext(ctx)
-
-	var agencies []gormstore.AgencyRow
-	if err := db.Table(m.tables.Agencies).Where("id IN ? AND NOT deleted", ids).Find(&agencies).Error; err != nil {
-		return nil, err
-	}
-	for _, r := range agencies {
-		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Agency", Properties: map[string]any{
-			"name": r.Name, "description": r.Description, "created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
-		}}
-	}
 
 	var repos []gormstore.RepositoryRow
 	if err := db.Table(m.tables.Repositories).Where("id IN ? AND NOT deleted", ids).Find(&repos).Error; err != nil {

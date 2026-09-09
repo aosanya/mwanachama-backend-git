@@ -30,11 +30,6 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 		return models.Repository{}, ErrRepoAlreadyExists
 	}
 
-	agencyID, err := m.ensureAgencyEntity(ctx)
-	if err != nil {
-		return models.Repository{}, fmt.Errorf("InitRepo: ensure agency: %w", err)
-	}
-
 	defaultBranch := req.DefaultBranch
 	if defaultBranch == "" {
 		defaultBranch = "main"
@@ -48,7 +43,6 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	})
-	row.AgencyID = gormstore.StringToNullable(agencyID)
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&row).Error; err != nil {
 		return models.Repository{}, fmt.Errorf("InitRepo: create repository: %w", err)
 	}
@@ -141,26 +135,4 @@ func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) PurgeRepo(ctx context.Context, repoID string) error {
 	return m.DeleteRepo(ctx, repoID)
-}
-
-// ── Repository internal helpers ───────────────────────────────────────────────
-
-// ensureAgencyEntity returns the ID of the single Agency root row for this
-// deployment, creating it if it does not yet exist. Each deployment is
-// single-tenant, so there is at most one Agency row in the database.
-func (m *gitManager) ensureAgencyEntity(ctx context.Context) (string, error) {
-	var row gormstore.AgencyRow
-	err := m.db.WithContext(ctx).Table(m.tables.Agencies).First(&row).Error
-	if err == nil {
-		return row.ID, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", err
-	}
-	now := models.NowRFC3339()
-	row = gormstore.AgencyToRow(models.Agency{Name: "default", CreatedAt: now, UpdatedAt: now})
-	if err := m.db.WithContext(ctx).Table(m.tables.Agencies).Create(&row).Error; err != nil {
-		return "", err
-	}
-	return row.ID, nil
 }

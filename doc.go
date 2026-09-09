@@ -7,7 +7,7 @@
 // gateway process — no separate service, no gRPC, no proto.
 //
 // Layout:
-//   - models/    — domain types (Agency, Repository, Branch, MergeRequest,
+//   - models/    — domain types (Repository, Branch, MergeRequest,
 //     Tag, Commit, Tree, Blob, Keyword, ImportJob, FetchBranchJob); callers
 //     use models.Repository etc. directly, no re-export in this package
 //   - gormstore/ — GORM row structs, row<->domain conversion, migration,

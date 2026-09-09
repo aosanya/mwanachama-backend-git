@@ -1,9 +1,7 @@
 package models
 
-// Repository is a versioned codebase owned by an [Agency]. An agency can
-// have multiple repositories; each is linked to its owning agency via the
-// gormstore row's AgencyID column. Sub-resources (Branches, Tags, Commits)
-// are separate rows linked by their own RepositoryID foreign key.
+// Repository is a versioned codebase. Sub-resources (Branches, Tags,
+// Commits) are separate rows linked by their own RepositoryID foreign key.
 type Repository struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`

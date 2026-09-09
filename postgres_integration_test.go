@@ -66,7 +66,7 @@ func newPostgresGitManager(t *testing.T, searcher BlobSearcher) (*gitManager, Ta
 			tables.BlobKeywordTags, tables.BlobReferences, tables.CommitParents,
 			tables.TreeBlobs, tables.TreeSubtrees, tables.ImportJobs, tables.FetchBranchJobs,
 			tables.Blobs, tables.Trees, tables.Commits, tables.Tags, tables.MergeRequests,
-			tables.Branches, tables.Repositories, tables.Agencies,
+			tables.Branches, tables.Repositories,
 		)
 	})
 

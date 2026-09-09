@@ -107,9 +107,14 @@ a scoped decision):**
   linked by any join row. `FetchBranch`'s `upsertTreeMetadataWithEdges` *does*
   wire proper nesting (`git_tree_subtrees`); this asymmetry between the two
   write paths is inherited, not introduced.
-- Repositories created via `ImportRepo`/`runImport` are not linked to the
+- ~~Repositories created via `ImportRepo`/`runImport` are not linked to the
   singleton `Agency` row (`AgencyID` stays `NULL`) — only `InitRepo` links
-  one. Pre-existing gap, carried over unchanged.
+  one. Pre-existing gap, carried over unchanged.~~ Moot as of 2026-09-09: the
+  `Agency` concept (model, gormstore row, table, `ensureAgencyEntity`,
+  `Repository.AgencyID`/`agency_id`, and the `has_repository` graph-edge
+  shape derived from it) was removed outright as vestigial CodeValdGit-era
+  single-tenant plumbing that this package's single-Agency, single-database
+  scoping made pointless — see `documentation/3. implementation/todo_done.md`.
 
 **Scope: this repo only, 2026-09-04.** `mwanachama-backend-api-gateway`'s
 wiring (`cmd/server/stores.go`'s `memoryStores`/`postgresStores`, both of
@@ -125,7 +130,7 @@ newly-introduced regression to a previously-green build.
 ## Porting notes
 
 - `git.go`'s `GitManager` interface (method set unchanged) and the domain
-  types in `mwanachama-backend-git/models` (`Agency`, `Repository`, `Branch`,
+  types in `mwanachama-backend-git/models` (`Repository`, `Branch`,
   `MergeRequest`, `Tag`, `Commit`, `Tree`, `Blob`, `Keyword`, `ImportJob`,
   `FetchBranchJob`) port field-for-field from the entitygraph era. Request/
   filter/graph DTOs (`CreateRepoRequest`, `MergeRequestFilter`, `GraphNode`/
