@@ -67,7 +67,7 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository, error) {
 	var rows []gormstore.RepositoryRow
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
-		Where("NOT deleted").Find(&rows).Error; err != nil {
+		Where("NOT deleted").Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListRepositories: %w", err)
 	}
 	out := make([]models.Repository, len(rows))

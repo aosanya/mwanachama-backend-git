@@ -120,9 +120,11 @@ func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]
 	if filter.Scope != "" {
 		q = q.Where("scope = ?", filter.Scope)
 	}
-	if filter.Limit > 0 {
-		q = q.Limit(filter.Limit)
+	limit := filter.Limit
+	if limit <= 0 || limit > maxListPage {
+		limit = maxListPage
 	}
+	q = q.Limit(limit)
 	var rows []gormstore.KeywordRow
 	if err := q.Order("id").Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListKeywords: %w", err)

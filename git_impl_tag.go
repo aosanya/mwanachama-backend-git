@@ -78,7 +78,7 @@ func (m *gitManager) ListTags(ctx context.Context, repoID string) ([]models.Tag,
 	}
 	var rows []gormstore.TagRow
 	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
-		Where("repository_id = ? AND NOT deleted", repoID).Find(&rows).Error; err != nil {
+		Where("repository_id = ? AND NOT deleted", repoID).Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListTags: %w", err)
 	}
 	out := make([]models.Tag, len(rows))

@@ -232,7 +232,7 @@ func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, fi
 func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID string) ([]models.Branch, error) {
 	var rows []gormstore.BranchRow
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
-		Where("workflow_run_id = ? AND NOT deleted", runID).Find(&rows).Error; err != nil {
+		Where("workflow_run_id = ? AND NOT deleted", runID).Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]models.Branch, len(rows))
@@ -249,7 +249,7 @@ func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID stri
 func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]gormstore.BranchRow, error) {
 	var rows []gormstore.BranchRow
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
-		Where("repository_id = ? AND NOT deleted", repositoryID).Find(&rows).Error
+		Where("repository_id = ? AND NOT deleted", repositoryID).Limit(maxListPage).Find(&rows).Error
 	return rows, err
 }
 

@@ -108,8 +108,12 @@ func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestF
 	if filter.WorkflowRunID != "" {
 		q = q.Where("workflow_run_id = ?", filter.WorkflowRunID)
 	}
+	limit := filter.Limit
+	if limit <= 0 || limit > maxListPage {
+		limit = maxListPage
+	}
 	var rows []gormstore.MergeRequestRow
-	if err := q.Find(&rows).Error; err != nil {
+	if err := q.Limit(limit).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListMergeRequests: %w", err)
 	}
 	out := make([]models.MergeRequest, len(rows))

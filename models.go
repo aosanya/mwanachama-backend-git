@@ -83,6 +83,10 @@ type MergeRequestFilter struct {
 	// WorkflowRunID restricts results to MRs created within the given
 	// orchestrated run when set. Empty disables the filter.
 	WorkflowRunID string `json:"workflow_run_id,omitempty"`
+
+	// Limit caps the number of merge requests returned, up to maxListPage.
+	// 0 (or anything above maxListPage) falls back to maxListPage.
+	Limit int `json:"limit,omitempty"`
 }
 
 // BranchFilter constrains the result set returned by [GitManager.ListBranches].
@@ -234,7 +238,8 @@ type KeywordFilter struct {
 	// return all root-level keywords (no parent).
 	ParentID string `json:"parent_id,omitempty"`
 
-	// Limit caps the number of keywords returned. 0 means no limit.
+	// Limit caps the number of keywords returned, up to maxListPage. 0 (or
+	// anything above maxListPage) falls back to maxListPage.
 	Limit int `json:"limit,omitempty"`
 }
 
