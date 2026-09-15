@@ -36,6 +36,10 @@ const (
 	// Payload: [BranchFetchedPayload].
 	TopicBranchFetched = topicPrefix + "branch.fetched"
 
+	// TopicBranchPushed fires after IndexPushedBranch successfully materialises
+	// a git-push (G6). Payload: [BranchPushedPayload].
+	TopicBranchPushed = topicPrefix + "branch.pushed"
+
 	// TopicBranchMerged fires after a branch is successfully merged into the
 	// repository default branch. Payload: [BranchMergedPayload].
 	TopicBranchMerged = topicPrefix + "branch.merged"
@@ -133,6 +137,15 @@ type BranchFetchedPayload struct {
 	// WorkflowRunID links this event to its originating WorkflowRun
 	// (FEAT-20260602-001). Empty for branches fetched outside any run.
 	WorkflowRunID string `json:"workflow_run_id,omitempty"`
+}
+
+// BranchPushedPayload is the [events.Publisher] payload for [TopicBranchPushed].
+type BranchPushedPayload struct {
+	BranchID   string `json:"branch_id"`
+	RepoName   string `json:"repo_name"`
+	BranchRef  string `json:"branch_ref"`
+	NewSHA     string `json:"new_sha"`
+	NewCommits int    `json:"new_commits"`
 }
 
 // BranchMergedPayload is the [events.Publisher] payload for [TopicBranchMerged].

@@ -10,16 +10,14 @@ import (
 )
 
 // TestNewGitManagerSatisfiesInterface locks in that *gitManager fully
-// implements GitManager. IndexPushedBranch is a deliberate G6 stub;
-// SearchBlobs gracefully no-ops with a nil searcher.
+// implements GitManager. IndexPushedBranch's real behaviour (G6) is
+// covered end-to-end in git_impl_push_test.go/git_smarthttp_test.go, not
+// here; SearchBlobs gracefully no-ops with a nil searcher.
 func TestNewGitManagerSatisfiesInterface(t *testing.T) {
 	m := newTestManager(t)
 	var gm GitManager = m
 	if _, err := gm.ListRepositories(context.Background()); err != nil {
 		t.Fatalf("ListRepositories on a fresh manager: %v", err)
-	}
-	if err := gm.IndexPushedBranch(context.Background(), "repo", "refs/heads/main", "", "abc"); !errors.Is(err, ErrPushIndexingNotImplemented) {
-		t.Fatalf("expected ErrPushIndexingNotImplemented, got %v", err)
 	}
 	results, err := gm.SearchBlobs(context.Background(), SearchBlobsRequest{Query: "auth"})
 	if err != nil || len(results) != 0 {
