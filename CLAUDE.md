@@ -53,7 +53,27 @@ mistaken for a first parent. **`git_impl_fetchbranch.go`'s `walkCommitsOnly`
 still has this omission** — imported/fetched branches report a one-commit
 history today, confirmed by test. That's board row G12, deliberately not
 folded into G6's fix since it predates it and raises its own backfill
-question for already-indexed repos. **Not done as part of G6**: mounting `SmartHTTPHandler()`
+question for already-indexed repos.
+
+**The push path's reuse-or-create check keys on `(sha, path)`, never SHA
+alone** (`findRowIDBySHAAndPath`, fixed 2026-09-16). Path is not a property
+of the content a SHA identifies — the same bytes legitimately sit at more
+than one path (a repeated `LICENSE`, an empty `__init__.py`, a vendored
+file) — so the SHA-only key G6 originally shipped filed every occurrence
+under whichever path was indexed first and gave the rest no row at all,
+leaving them unreadable through `ReadFile`. Confirmed by test before fixing,
+and note this was a G6-only regression, not inherited: `FetchBranch`'s
+`upsertBlobMetadataWithID` unconditionally `Create`s a row per path and was
+always correct here. Adding the path to the key costs nothing G6 wanted —
+re-pushing the same file at the same path still reuses its row, which is the
+idempotency property `TestSmartHTTP_SecondPushIsIdempotentForUnchangedTree`
+guards.
+
+Worth keeping straight when touching any of this: **content-addressed reuse
+across repositories is fine and deliberate.** Identical SHA means identical
+bytes, the way forks share objects on a real git host. It was briefly
+suspected as a bug and checked — there is no failure behind it, and
+`Commit`/`Tree`/`Blob` rows are not repository-scoped by design. **Not done as part of G6**: mounting `SmartHTTPHandler()`
 anywhere in `mwanachama-backend-api-gateway`'s own router — that's its own
 follow-up, not implied by "the wire protocol works," the same way
 `mwanachama-backend-accounting`'s ledger core and its gateway wiring
