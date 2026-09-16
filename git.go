@@ -12,6 +12,7 @@ package mwanachamagit
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 
 	"gorm.io/gorm"
@@ -347,6 +348,19 @@ type GitManager interface {
 	// newSHA is the new branch tip written by the push.
 	IndexPushedBranch(ctx context.Context, repoName, branchRef, oldSHA, newSHA string) error
 
+	// SmartHTTPHandler returns an http.Handler serving the real git Smart
+	// HTTP wire protocol (G6) — ref advertisement, upload-pack (clone/
+	// fetch), and receive-pack (push, which calls IndexPushedBranch on
+	// success). The caller mounts it at whatever base path it chooses
+	// (e.g. a gateway's "/v1/git/smart/"); the handler's own routing reads
+	// the request path relative to that mount point as
+	// "/{repoName}/info/refs", "/{repoName}/git-upload-pack", and
+	// "/{repoName}/git-receive-pack" — see git_smarthttp.go. A repository
+	// named in a request that has no Repository row yet is created
+	// automatically on first contact, mirroring a real git server's usual
+	// "push creates the remote" behaviour.
+	SmartHTTPHandler() http.Handler
+
 	// ── Blob full-text search ─────────────────────────────────────────────────
 
 	// SearchBlobs performs a ranked full-text search over Blob name and content
@@ -405,9 +419,10 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, fn func() error) error 
 // gitManager is the concrete implementation of [GitManager], backed by
 // GORM-mapped relational tables (see gormstore/) rather than
 // entitygraph.DataManager — see this repo's CLAUDE.md for the migration
-// record. IndexPushedBranch (G6 — real git-push wire protocol) is a
-// deliberate "not implemented" stub; SearchBlobs (G7) works today and
-// gracefully no-ops until a real BlobSearcher is injected.
+// record. IndexPushedBranch and SmartHTTPHandler (G6 — real git-push wire
+// protocol) are implemented for real, see git_impl_push.go/
+// git_smarthttp.go; SearchBlobs (G7) works today and gracefully no-ops
+// until a real BlobSearcher is injected.
 type gitManager struct {
 	db        *gorm.DB
 	tables    TableNames

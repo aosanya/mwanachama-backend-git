@@ -12,11 +12,38 @@ Module path `github.com/aosanya/mwanachama-backend-git`.
 server for wire-protocol `clone`/`fetch`/`push`) and the current v2
 (`GitManager`, now GORM-native — branches/commits/trees/blobs/merge
 requests/tags/rollback/history modeled as relational rows). **Only v2 is in
-scope here.** `mwanachama-frontend-kazi` needs versioned content, not a real git
-server; the v1 `Backend`, `storage/arangodb/storer.go` (the go-git
-`storage.Storer` built on entity CRUD), and `internal/server/githttp.go` are
-deliberately not ported. If real git-protocol interop turns out to be
-needed later, that's a new scoped decision, not a default.
+scope here** — the v1 `Backend` and `storage/arangodb/storer.go` (the
+go-git `storage.Storer` built on entity CRUD) were never ported, and never
+need to be; `openOrInitBareRepo`/`SmartHTTPHandler` below read/write a real
+on-disk bare git repo directly, no entity-graph storer in between.
+
+**Real git Smart HTTP wire-protocol `push` support landed — G6, see
+`git_impl_push.go`/`git_smarthttp.go`.** This was flagged for a long time
+as "not a default, a new scoped decision" (the note used to read almost
+exactly that); the decision was made and it's built: `GitManager.
+SmartHTTPHandler()` returns a real `http.Handler` a caller mounts anywhere,
+serving ref advertisement, upload-pack (clone/fetch), and receive-pack
+(push) against `openOrInitBareRepo`'s on-disk bare clone (auto-`git init
+--bare` on first contact, same first-push-creates-the-remote behaviour a
+real git host has) — ported from `CodeValdGit`'s own
+`internal/server/githttp.go`, adapted single-tenant (this repo dropped the
+Agency concept entirely) and read straight off go-git's own storer rather
+than the dropped v1 `Backend.OpenStorer` abstraction. `IndexPushedBranch`
+is implemented for real too, reusing git_impl_fetchbranch.go's own
+commit/tree-walk *shape* but made idempotent per (repo, SHA) — unlike
+FetchBranch's one-shot clean-slate walk, this runs on every push to a
+branch that may already be fully indexed, so it checks for an existing row
+by SHA before creating one rather than duplicating the whole history/tree
+on every push. Verified end-to-end with real pushes (go-git client-side,
+the actual wire protocol, not a mocked call) in
+`git_smarthttp_test.go` — including a second push proving the idempotency
+holds and a delete-only push (`git push --delete`, which carries no
+packfile and needs its own path since go-git's `ReceivePack` fails on an
+empty one). **Not done as part of G6**: mounting `SmartHTTPHandler()`
+anywhere in `mwanachama-backend-api-gateway`'s own router — that's its own
+follow-up, not implied by "the wire protocol works," the same way
+`mwanachama-backend-accounting`'s ledger core and its gateway wiring
+(W9) were two separate steps.
 
 Also dropped from the original: `proto/`, `cmd/server`, `internal/server`
 (gRPC `GitServiceServer`), `internal/registrar` (CodeValdCortex Cross
