@@ -249,13 +249,13 @@ func (m *gitManager) commitRowExists(ctx context.Context, sha string) (bool, err
 }
 
 // upsertTreeIdempotent is upsertTreeMetadataWithEdges (git_impl_fetchbranch.go),
-// made safe to call on every push: a Tree or Blob whose SHA already has a
-// row is reused (its existing row id is looked up and returned/linked)
-// instead of being recreated, so an unchanged subtree or file pushed again
-// costs one SELECT, not a duplicate row. Returns the row ID of tree.
+// made safe to call on every push: a Tree or Blob already carrying a row for
+// this (SHA, path) is reused instead of recreated, so an unchanged subtree or
+// file pushed again costs one SELECT, not a duplicate row. Returns the row ID
+// of tree.
 func (m *gitManager) upsertTreeIdempotent(ctx context.Context, repo *gogit.Repository, tree *gogitobject.Tree, pathPrefix, now string) (string, error) {
 	treeSHA := tree.Hash.String()
-	if existingID, err := m.findRowIDBySHA(ctx, m.tables.Trees, treeSHA); err != nil {
+	if existingID, err := m.findRowIDBySHAAndPath(ctx, m.tables.Trees, treeSHA, pathPrefix); err != nil {
 		return "", err
 	} else if existingID != "" {
 		return existingID, nil
@@ -309,7 +309,7 @@ func (m *gitManager) upsertTreeIdempotent(ctx context.Context, repo *gogit.Repos
 // see upsertTreeIdempotent's own doc.
 func (m *gitManager) upsertBlobIdempotent(ctx context.Context, repo *gogit.Repository, entry gogitobject.TreeEntry, fullPath, now string) (string, error) {
 	blobSHA := entry.Hash.String()
-	if existingID, err := m.findRowIDBySHA(ctx, m.tables.Blobs, blobSHA); err != nil {
+	if existingID, err := m.findRowIDBySHAAndPath(ctx, m.tables.Blobs, blobSHA, fullPath); err != nil {
 		return "", err
 	} else if existingID != "" {
 		return existingID, nil
@@ -329,13 +329,20 @@ func (m *gitManager) upsertBlobIdempotent(ctx context.Context, repo *gogit.Repos
 	return row.ID, nil
 }
 
-// findRowIDBySHA returns the id of the row in table matching sha, or "" if
-// none exists yet.
-func (m *gitManager) findRowIDBySHA(ctx context.Context, table, sha string) (string, error) {
+// findRowIDBySHAAndPath returns the id of the row in table matching both sha
+// and path, or "" if none exists yet.
+//
+// Path belongs in the key because it is not a property of the content the SHA
+// identifies — the same bytes legitimately sit at more than one path (a
+// repeated LICENSE, an empty __init__.py, a vendored file). Keying on SHA
+// alone filed every occurrence under whichever path was indexed first and left
+// the rest with no row at all, so ReadFile could not find them.
+func (m *gitManager) findRowIDBySHAAndPath(ctx context.Context, table, sha, path string) (string, error) {
 	var id string
-	err := m.db.WithContext(ctx).Table(table).Select("id").Where("sha = ?", sha).Limit(1).Scan(&id).Error
+	err := m.db.WithContext(ctx).Table(table).Select("id").
+		Where("sha = ? AND path = ?", sha, path).Limit(1).Scan(&id).Error
 	if err != nil {
-		return "", fmt.Errorf("findRowIDBySHA %s: %w", shortSHA(sha), err)
+		return "", fmt.Errorf("findRowIDBySHAAndPath %s path=%q: %w", shortSHA(sha), path, err)
 	}
 	return id, nil
 }

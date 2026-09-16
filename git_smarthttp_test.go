@@ -179,6 +179,88 @@ func TestSmartHTTP_SecondPushIsIdempotentForUnchangedTree(t *testing.T) {
 	}
 }
 
+// TestSmartHTTP_IdenticalContentAtTwoPathsKeepsBothFiles pushes two files
+// with byte-identical content at different paths. They share one blob SHA,
+// so a push that keyed its reuse-or-create check on SHA alone gave the
+// second path no Blob row at all and left it unreadable — path is not a
+// property of the content a SHA identifies.
+func TestSmartHTTP_IdenticalContentAtTwoPathsKeepsBothFiles(t *testing.T) {
+	m := newTestManager(t)
+	srv := httptest.NewServer(m.SmartHTTPHandler())
+	defer srv.Close()
+
+	workDir := t.TempDir()
+	repo, err := gogit.PlainInit(workDir, false)
+	if err != nil {
+		t.Fatalf("PlainInit: %v", err)
+	}
+	if _, err := repo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{srv.URL + "/widgets"},
+	}); err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workDir, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll docs: %v", err)
+	}
+	for _, p := range []string{"LICENSE", "docs/LICENSE"} {
+		if err := os.WriteFile(filepath.Join(workDir, p), []byte("same bytes\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", p, err)
+		}
+		if _, err := wt.Add(p); err != nil {
+			t.Fatalf("Add %s: %v", p, err)
+		}
+	}
+	if _, err := wt.Commit("two identical files", &gogit.CommitOptions{
+		Author: &gogitobject.Signature{Name: "Test Author", Email: "author@example.com", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	if err := repo.Push(&gogit.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{config.RefSpec(head.Name().String() + ":refs/heads/main")},
+	}); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	ctx := context.Background()
+	repoModel, err := m.GetRepositoryByName(ctx, "widgets")
+	if err != nil {
+		t.Fatalf("GetRepositoryByName: %v", err)
+	}
+	branches, err := m.ListBranches(ctx, repoModel.ID)
+	if err != nil || len(branches) != 1 {
+		t.Fatalf("ListBranches: %+v, err=%v", branches, err)
+	}
+
+	for _, path := range []string{"LICENSE", "docs/LICENSE"} {
+		blob, err := m.ReadFile(ctx, branches[0].ID, path)
+		if err != nil {
+			t.Errorf("ReadFile(%q): %v — both paths hold the same bytes and both must be readable", path, err)
+			continue
+		}
+		if blob.Path != path {
+			t.Errorf("ReadFile(%q) returned a blob at path %q", path, blob.Path)
+		}
+	}
+
+	var blobPaths []string
+	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Order("path").Pluck("path", &blobPaths).Error; err != nil {
+		t.Fatalf("list blob paths: %v", err)
+	}
+	if len(blobPaths) != 2 {
+		t.Fatalf("expected one Blob row per path, got %d: %v", len(blobPaths), blobPaths)
+	}
+}
+
 // TestSmartHTTP_PushedHistoryIsWalkable pushes three commits and confirms
 // Log walks the whole chain back from the tip. Log resolves history through
 // gormstore.CommitChainIDs' recursive CTE over git_commit_parents, so a push
