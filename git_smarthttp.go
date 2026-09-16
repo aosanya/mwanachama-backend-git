@@ -202,11 +202,36 @@ func (h *smartHTTPHandler) receivePack(w http.ResponseWriter, r *http.Request, r
 				repoName, cmd.Name, idxErr)
 		}
 	}
+	h.settleHEAD(r.Context(), repoName)
 
 	setNoCacheHeaders(w)
 	w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 	w.WriteHeader(http.StatusOK)
 	_ = status.Encode(w)
+}
+
+// settleHEAD repoints the bare repo's HEAD if the push left it dangling, so
+// the next `git clone` has something to check out — best-effort, and logged
+// rather than failed, since the push itself has already been accepted and
+// the refs are already updated.
+func (h *smartHTTPHandler) settleHEAD(ctx context.Context, repoName string) {
+	repo, err := h.m.openOrInitBareRepo(ctx, repoName)
+	if err != nil {
+		log.Printf("[receive-pack] repo=%q: settleHEAD: open: %v", repoName, err)
+		return
+	}
+	var preferred string
+	if repoRow, err := h.m.GetRepositoryByName(ctx, repoName); err == nil {
+		preferred = repoRow.DefaultBranch
+	}
+	moved, err := ensureHEADResolves(repo, preferred)
+	if err != nil {
+		log.Printf("[receive-pack] repo=%q: settleHEAD: %v", repoName, err)
+		return
+	}
+	if moved {
+		log.Printf("[receive-pack] repo=%q: HEAD was dangling, repointed at an existing branch", repoName)
+	}
 }
 
 // isDeleteOnly reports whether every command in req deletes a ref (New is
@@ -268,7 +293,10 @@ func (h *smartHTTPHandler) receivePackDeletes(w http.ResponseWriter, ctx context
 // deleteBranchRowForRef soft-deletes the Branch row matching branchRef, if
 // one exists — best-effort, see receivePackDeletes' own doc.
 func (h *smartHTTPHandler) deleteBranchRowForRef(ctx context.Context, repoID, branchRef string) {
-	branchName := strings.TrimPrefix(branchRef, "refs/heads/")
+	if !strings.HasPrefix(branchRef, branchRefPrefix) {
+		return // not a branch — nothing was indexed as one, see IndexPushedBranch
+	}
+	branchName := strings.TrimPrefix(branchRef, branchRefPrefix)
 	branches, err := h.m.ListBranches(ctx, repoID)
 	if err != nil {
 		log.Printf("[receive-pack] repo=%s: deleteBranchRowForRef: ListBranches: %v", repoID, err)

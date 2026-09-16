@@ -36,6 +36,11 @@ import (
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
+// branchRefPrefix is the ref namespace a Branch row corresponds to. Refs
+// outside it (tags, notes, replace) are stored in the bare repo but have no
+// Branch row — see IndexPushedBranch.
+const branchRefPrefix = "refs/heads/"
+
 // IndexPushedBranch indexes the commits a git push (via the Smart HTTP
 // receive-pack handler, git_smarthttp.go) just wrote into the repository's
 // on-disk bare clone, materialising Commit, Tree, and Blob rows, then
@@ -52,6 +57,16 @@ import (
 func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef, oldSHA, newSHA string) error {
 	start := time.Now()
 	log.Printf("[push-index] repo=%q ref=%q old=%s new=%s: start", repoName, branchRef, shortSHA(oldSHA), shortSHA(newSHA))
+
+	// Only refs/heads/* is a branch. A tag (or any other ref namespace) that
+	// reached here would otherwise be filed as a Branch row literally named
+	// "refs/tags/v1.0.0", since the name is derived by trimming a
+	// refs/heads/ prefix that isn't there. The ref itself is already stored
+	// in the bare repo either way; it just isn't a branch to index.
+	if !strings.HasPrefix(branchRef, branchRefPrefix) {
+		log.Printf("[push-index] repo=%q ref=%q: not a branch ref — stored in git, not indexed as a Branch", repoName, branchRef)
+		return nil
+	}
 
 	var repoRow gormstore.RepositoryRow
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
@@ -351,7 +366,7 @@ func (m *gitManager) findRowIDBySHAAndPath(ctx context.Context, table, sha, path
 // one (a branch pushed for the first time via `git push`, never created
 // through CreateBranch first) if none exists yet.
 func (m *gitManager) findOrCreatePushedBranch(ctx context.Context, repoID, repoName, branchRef, now string) (string, error) {
-	branchName := strings.TrimPrefix(branchRef, "refs/heads/")
+	branchName := strings.TrimPrefix(branchRef, branchRefPrefix)
 	var row gormstore.BranchRow
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("repository_id = ? AND name = ? AND NOT deleted", repoID, branchName).First(&row).Error
@@ -420,11 +435,69 @@ func (m *gitManager) openOrInitBareRepo(ctx context.Context, repoName string) (*
 	if err != nil {
 		return nil, fmt.Errorf("openOrInitBareRepo %s: git init --bare %s: %w", repoName, dir, err)
 	}
+	// PlainInit hardcodes HEAD to refs/heads/master; point it at the branch
+	// this repository actually calls default, the way `git init -b` would.
+	if repoRow.DefaultBranch != "" {
+		headRef := gogitplumbing.NewSymbolicReference(gogitplumbing.HEAD, gogitplumbing.NewBranchReferenceName(repoRow.DefaultBranch))
+		if err := repo.Storer.SetReference(headRef); err != nil {
+			log.Printf("[push-index] repo=%q: WARNING set HEAD to %q: %v", repoName, repoRow.DefaultBranch, err)
+		}
+	}
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Where("id = ?", repoRow.ID).
 		Updates(map[string]any{"bare_clone_path": dir, "updated_at": models.NowRFC3339()}).Error; err != nil {
 		return nil, fmt.Errorf("openOrInitBareRepo %s: persist bare_clone_path: %w", repoName, err)
 	}
 	return repo, nil
+}
+
+// ensureHEADResolves points the bare repo's HEAD at a branch that exists,
+// and reports whether it had to move it.
+//
+// A dangling HEAD is not a cosmetic problem: `git clone` resolves the
+// remote's HEAD to decide what to check out, so a repo whose HEAD names a
+// ref no client ever pushed clones as "warning: remote HEAD refers to
+// nonexistent ref" with an empty working tree and no local branch. That is
+// reachable by ordinary use — go-git's PlainInit writes HEAD as
+// refs/heads/master whatever the repository's own default branch is, and
+// a client is free to push only some other branch besides.
+//
+// preferred (the Repository row's DefaultBranch) wins when it is present;
+// otherwise any branch beats leaving HEAD dangling.
+func ensureHEADResolves(repo *gogit.Repository, preferred string) (bool, error) {
+	if _, err := repo.Reference(gogitplumbing.HEAD, true); err == nil {
+		return false, nil
+	}
+
+	var target gogitplumbing.ReferenceName
+	if preferred != "" {
+		name := gogitplumbing.NewBranchReferenceName(preferred)
+		if _, err := repo.Storer.Reference(name); err == nil {
+			target = name
+		}
+	}
+	if target == "" {
+		iter, err := repo.Branches()
+		if err != nil {
+			return false, fmt.Errorf("ensureHEADResolves: list branches: %w", err)
+		}
+		defer iter.Close()
+		if err := iter.ForEach(func(r *gogitplumbing.Reference) error {
+			if target == "" {
+				target = r.Name()
+			}
+			return nil
+		}); err != nil {
+			return false, fmt.Errorf("ensureHEADResolves: walk branches: %w", err)
+		}
+	}
+	if target == "" {
+		// Nothing pushed yet — a dangling HEAD is correct for an empty repo.
+		return false, nil
+	}
+	if err := repo.Storer.SetReference(gogitplumbing.NewSymbolicReference(gogitplumbing.HEAD, target)); err != nil {
+		return false, fmt.Errorf("ensureHEADResolves: set HEAD to %s: %w", target, err)
+	}
+	return true, nil
 }
 
 // shortSHA is sha[:8], or sha unchanged if shorter — every log line above
