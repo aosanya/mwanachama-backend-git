@@ -39,7 +39,21 @@ the actual wire protocol, not a mocked call) in
 `git_smarthttp_test.go` — including a second push proving the idempotency
 holds and a delete-only push (`git push --delete`, which carries no
 packfile and needs its own path since go-git's `ReceivePack` fails on an
-empty one). **Not done as part of G6**: mounting `SmartHTTPHandler()`
+empty one).
+
+**A commit walk that creates `Commit` rows is only half the job** — it must
+also write the `git_commit_parents` join rows, or the history it just
+indexed is unreachable. `Log` resolves history solely through
+`gormstore.CommitChainIDs`' recursive CTE over that table, so an unlinked
+tip reports a one-commit history however many commits were actually
+indexed. `git_impl_push.go`'s `linkCommitParents` does this for the push
+path (added 2026-09-16, after review caught `walkNewCommits` omitting it);
+`ParentIndex` carries git's own parent order, so a merge parent is never
+mistaken for a first parent. **`git_impl_fetchbranch.go`'s `walkCommitsOnly`
+still has this omission** — imported/fetched branches report a one-commit
+history today, confirmed by test. That's board row G12, deliberately not
+folded into G6's fix since it predates it and raises its own backfill
+question for already-indexed repos. **Not done as part of G6**: mounting `SmartHTTPHandler()`
 anywhere in `mwanachama-backend-api-gateway`'s own router — that's its own
 follow-up, not implied by "the wire protocol works," the same way
 `mwanachama-backend-accounting`'s ledger core and its gateway wiring

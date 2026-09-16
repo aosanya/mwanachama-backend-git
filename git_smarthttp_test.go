@@ -12,6 +12,8 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/aosanya/mwanachama-backend-git/gormstore"
 )
 
 // pushOneCommit clones srvURL/repoName into a fresh temp working copy (or
@@ -174,6 +176,162 @@ func TestSmartHTTP_SecondPushIsIdempotentForUnchangedTree(t *testing.T) {
 	}
 	if branches[0].SHA != secondSHA {
 		t.Fatalf("branch tip SHA = %q after second push, want %q", branches[0].SHA, secondSHA)
+	}
+}
+
+// TestSmartHTTP_PushedHistoryIsWalkable pushes three commits and confirms
+// Log walks the whole chain back from the tip. Log resolves history through
+// gormstore.CommitChainIDs' recursive CTE over git_commit_parents, so a push
+// that materialises Commit rows without linking them reports a one-commit
+// history — the rows exist but nothing can reach them.
+func TestSmartHTTP_PushedHistoryIsWalkable(t *testing.T) {
+	m := newTestManager(t)
+	srv := httptest.NewServer(m.SmartHTTPHandler())
+	defer srv.Close()
+
+	workDir := t.TempDir()
+	pushOneCommit(t, srv.URL, "widgets", workDir, "a.txt", "first\n", "first commit")
+	pushOneCommit(t, srv.URL, "widgets", workDir, "b.txt", "second\n", "second commit")
+	tipSHA := pushOneCommit(t, srv.URL, "widgets", workDir, "c.txt", "third\n", "third commit")
+
+	ctx := context.Background()
+	repo, err := m.GetRepositoryByName(ctx, "widgets")
+	if err != nil {
+		t.Fatalf("GetRepositoryByName: %v", err)
+	}
+	branches, err := m.ListBranches(ctx, repo.ID)
+	if err != nil || len(branches) != 1 {
+		t.Fatalf("ListBranches: %+v, err=%v", branches, err)
+	}
+
+	history, err := m.Log(ctx, branches[0].ID, LogFilter{})
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("expected all 3 pushed commits in the branch history, got %d: %+v", len(history), history)
+	}
+	if history[0].SHA != tipSHA {
+		t.Errorf("history[0].SHA = %q, want the tip %q (Log returns newest-first)", history[0].SHA, tipSHA)
+	}
+	wantMessages := []string{"third commit", "second commit", "first commit"}
+	for i, want := range wantMessages {
+		if history[i].Message != want {
+			t.Errorf("history[%d].Message = %q, want %q", i, history[i].Message, want)
+		}
+	}
+}
+
+// TestSmartHTTP_MergeCommitRecordsBothParentsInOrder pushes a merge and
+// confirms both parents are linked with git's own parent order preserved —
+// ParentIndex 0 is the first parent, 1 the merged-in branch.
+func TestSmartHTTP_MergeCommitRecordsBothParentsInOrder(t *testing.T) {
+	m := newTestManager(t)
+	srv := httptest.NewServer(m.SmartHTTPHandler())
+	defer srv.Close()
+
+	workDir := t.TempDir()
+	pushOneCommit(t, srv.URL, "widgets", workDir, "base.txt", "base\n", "base commit")
+
+	repo, err := gogit.PlainOpen(workDir)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	baseHash := head.Hash()
+
+	// A side commit off the base, then a merge commit on the main line with
+	// (mainTip, sideTip) as its parents, in that order.
+	sideRef := gogitplumbing.NewBranchReferenceName("side")
+	if err := wt.Checkout(&gogit.CheckoutOptions{Hash: baseHash, Branch: sideRef, Create: true}); err != nil {
+		t.Fatalf("Checkout side: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "side.txt"), []byte("side\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile side.txt: %v", err)
+	}
+	if _, err := wt.Add("side.txt"); err != nil {
+		t.Fatalf("Add side.txt: %v", err)
+	}
+	sideSHA, err := wt.Commit("side commit", &gogit.CommitOptions{
+		Author: &gogitobject.Signature{Name: "Test Author", Email: "author@example.com", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("Commit side: %v", err)
+	}
+
+	if err := wt.Checkout(&gogit.CheckoutOptions{Hash: baseHash}); err != nil {
+		t.Fatalf("Checkout back to base: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile main.txt: %v", err)
+	}
+	if _, err := wt.Add("main.txt"); err != nil {
+		t.Fatalf("Add main.txt: %v", err)
+	}
+	mainSHA, err := wt.Commit("main commit", &gogit.CommitOptions{
+		Author: &gogitobject.Signature{Name: "Test Author", Email: "author@example.com", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("Commit main: %v", err)
+	}
+	// The merge result itself — base + main.txt + side.txt. go-git refuses a
+	// commit with a clean worktree, so the merge has to actually carry the
+	// side branch's file, which is what merging it in means anyway.
+	if err := os.WriteFile(filepath.Join(workDir, "side.txt"), []byte("side\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile side.txt for merge: %v", err)
+	}
+	if _, err := wt.Add("side.txt"); err != nil {
+		t.Fatalf("Add side.txt for merge: %v", err)
+	}
+	mergeSHA, err := wt.Commit("merge side into main", &gogit.CommitOptions{
+		Author:  &gogitobject.Signature{Name: "Test Author", Email: "author@example.com", When: time.Now()},
+		Parents: []gogitplumbing.Hash{mainSHA, sideSHA},
+	})
+	if err != nil {
+		t.Fatalf("Commit merge: %v", err)
+	}
+	if err := repo.Push(&gogit.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{config.RefSpec(gogitplumbing.NewHash(mergeSHA.String()).String() + ":refs/heads/main")},
+	}); err != nil {
+		t.Fatalf("push merge: %v", err)
+	}
+
+	ctx := context.Background()
+	var mergeRow gormstore.CommitRow
+	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
+		Where("sha = ?", mergeSHA.String()).First(&mergeRow).Error; err != nil {
+		t.Fatalf("find merge commit row: %v", err)
+	}
+
+	type parentJoin struct {
+		SHA         string
+		ParentIndex int
+	}
+	var parents []parentJoin
+	if err := m.db.WithContext(ctx).Table(m.tables.CommitParents+" AS cp").
+		Select("c.sha AS sha, cp.parent_index AS parent_index").
+		Joins("JOIN "+m.tables.Commits+" AS c ON c.id = cp.parent_id").
+		Where("cp.commit_id = ?", mergeRow.ID).
+		Order("cp.parent_index").
+		Scan(&parents).Error; err != nil {
+		t.Fatalf("read merge parents: %v", err)
+	}
+	if len(parents) != 2 {
+		t.Fatalf("expected the merge commit to have 2 linked parents, got %d: %+v", len(parents), parents)
+	}
+	if parents[0].SHA != mainSHA.String() {
+		t.Errorf("first parent (ParentIndex 0) = %q, want the main-line tip %q", parents[0].SHA, mainSHA)
+	}
+	if parents[1].SHA != sideSHA.String() {
+		t.Errorf("second parent (ParentIndex 1) = %q, want the merged-in side tip %q", parents[1].SHA, sideSHA)
 	}
 }
 

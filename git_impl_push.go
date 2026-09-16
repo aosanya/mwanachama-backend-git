@@ -115,15 +115,17 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 
 // walkNewCommits walks backward from tip (following parent links,
 // breadth-first) and batch-inserts a Commit row for every commit reached
-// that does not already have one — stopping a path the moment it reaches
-// oldSHA or a commit already indexed by an earlier push or fetch. Returns
-// the number of newly-created rows.
+// that does not already have one, then wires each one's git_commit_parents
+// rows — stopping a path the moment it reaches oldSHA or a commit already
+// indexed by an earlier push or fetch. Returns the number of newly-created
+// rows.
 func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository, tip gogitplumbing.Hash, oldSHA string) (int, error) {
 	oldHash := gogitplumbing.NewHash(oldSHA)
 	now := models.NowRFC3339()
 
 	visited := map[string]bool{}
 	var rows []gormstore.CommitRow
+	parentSHAs := map[string][]string{}
 	queue := []gogitplumbing.Hash{tip}
 	for len(queue) > 0 {
 		h := queue[0]
@@ -159,11 +161,14 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 			CommittedAt:    c.Committer.When.UTC().Format(time.RFC3339),
 			CreatedAt:      now,
 		}))
+		shas := make([]string, 0, len(c.ParentHashes))
 		for _, p := range c.ParentHashes {
+			shas = append(shas, p.String())
 			if !visited[p.String()] {
 				queue = append(queue, p)
 			}
 		}
+		parentSHAs[sha] = shas
 	}
 	if len(rows) == 0 {
 		return 0, nil
@@ -171,7 +176,66 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).CreateInBatches(&rows, 200).Error; err != nil {
 		return 0, err
 	}
+	if err := m.linkCommitParents(ctx, rows, parentSHAs); err != nil {
+		return 0, err
+	}
 	return len(rows), nil
+}
+
+// linkCommitParents writes the git_commit_parents rows for a batch of
+// just-inserted commits. Without them a pushed branch's history is
+// unreachable: [gormstore.CommitChainIDs]' recursive CTE — the only way Log
+// walks backwards from a branch tip — follows this table and nothing else,
+// so an unlinked tip reports a one-commit history no matter how many
+// commits the push actually carried.
+//
+// A parent's row id comes from this same batch where the parent was new
+// too, and from one SHA lookup where it was already indexed (the branch's
+// previous tip, or anything an earlier push or fetch brought in). ParentIndex
+// keeps git's own parent order even if a link is skipped, so a merge parent
+// can never be mistaken for a first parent.
+func (m *gitManager) linkCommitParents(ctx context.Context, rows []gormstore.CommitRow, parentSHAs map[string][]string) error {
+	idBySHA := make(map[string]string, len(rows))
+	for _, r := range rows {
+		idBySHA[r.SHA] = r.ID
+	}
+
+	var lookup []string
+	for _, shas := range parentSHAs {
+		for _, sha := range shas {
+			if _, ok := idBySHA[sha]; !ok {
+				lookup = append(lookup, sha)
+			}
+		}
+	}
+	if len(lookup) > 0 {
+		var existing []gormstore.CommitRow
+		if err := m.db.WithContext(ctx).Table(m.tables.Commits).
+			Select("id", "sha").Where("sha IN ?", lookup).Find(&existing).Error; err != nil {
+			return fmt.Errorf("resolve parent commit rows: %w", err)
+		}
+		for _, r := range existing {
+			idBySHA[r.SHA] = r.ID
+		}
+	}
+
+	var links []gormstore.CommitParentRow
+	for _, r := range rows {
+		for i, sha := range parentSHAs[r.SHA] {
+			parentID, ok := idBySHA[sha]
+			if !ok {
+				log.Printf("[push-index] commit=%s: parent %s has no Commit row — history link skipped", shortSHA(r.SHA), shortSHA(sha))
+				continue
+			}
+			links = append(links, gormstore.CommitParentRow{CommitID: r.ID, ParentID: parentID, ParentIndex: i})
+		}
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	return m.db.WithContext(ctx).Table(m.tables.CommitParents).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		CreateInBatches(&links, 200).Error
 }
 
 // commitRowExists reports whether a Commit row with this SHA is already
