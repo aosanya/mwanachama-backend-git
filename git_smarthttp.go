@@ -11,15 +11,18 @@
 package mwanachamagit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	gogitserver "github.com/go-git/go-git/v5/plumbing/transport/server"
@@ -86,6 +89,11 @@ func (h *smartHTTPHandler) infoRefs(w http.ResponseWriter, r *http.Request, repo
 			httpErrorFromTransport(w, err)
 			return
 		}
+		// Served by serveShallowClone; go-git's own session cannot.
+		if err := advRefs.Capabilities.Set(capability.Shallow); err != nil {
+			httpErrorFromTransport(w, err)
+			return
+		}
 	} else {
 		sess, err := h.srv.NewReceivePackSession(ep, nil)
 		if err != nil {
@@ -129,11 +137,25 @@ func (h *smartHTTPHandler) uploadPack(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read upload-pack request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	req := packp.NewUploadPackRequest()
-	if err := req.Decode(r.Body); err != nil {
+	if err := req.Decode(bytes.NewReader(body)); err != nil {
 		http.Error(w, "malformed upload-pack request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !req.Depth.IsZero() || len(req.Shallows) > 0 {
+		if why := shallowRefusal(req); why != "" {
+			http.Error(w, "shallow request not supported: "+why, http.StatusNotImplemented)
+			return
+		}
+		h.serveShallowClone(w, r.Context(), repoName, req, bytes.HasSuffix(body, []byte("0009done\n")))
+		return
+	}
+	stripShallowCap(req)
 	resp, err := sess.UploadPack(r.Context(), req)
 	if err != nil {
 		httpErrorFromTransport(w, err)
