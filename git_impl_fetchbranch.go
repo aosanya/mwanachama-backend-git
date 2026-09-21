@@ -262,7 +262,9 @@ func (m *gitManager) deepenClone(ctx context.Context, branchName, sourceURL stri
 }
 
 // walkCommitsOnly walks all commits reachable from ref and upserts Commit
-// rows in one batch. seenSHAs deduplicates across multiple FetchBranch calls.
+// rows in one batch, then links their parents (linkCommitParents) so Log can
+// walk the fetched history. seenSHAs deduplicates across multiple FetchBranch
+// calls.
 func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository, ref *gogitplumbing.Reference, seenSHAs map[string]bool) error {
 	iter, err := repo.Log(&gogit.LogOptions{
 		From:  ref.Hash(),
@@ -275,6 +277,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 
 	now := models.NowRFC3339()
 	var rows []gormstore.CommitRow
+	parentSHAs := map[string][]string{}
 	if err := iter.ForEach(func(c *gogitobject.Commit) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -284,6 +287,9 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 			return nil
 		}
 		seenSHAs[sha] = true
+		for _, p := range c.ParentHashes {
+			parentSHAs[sha] = append(parentSHAs[sha], p.String())
+		}
 		rows = append(rows, gormstore.CommitToRow(models.Commit{
 			SHA:            sha,
 			Message:        c.Message,
@@ -307,7 +313,10 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 	if elapsed := time.Since(t0); elapsed > 500*time.Millisecond {
 		log.Printf("[fetchbranch] SLOW bulk-insert %d commits took %s", len(rows), elapsed)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return m.linkCommitParents(ctx, rows, parentSHAs)
 }
 
 // upsertTreeMetadataWithEdges creates a Tree row and its Blob children

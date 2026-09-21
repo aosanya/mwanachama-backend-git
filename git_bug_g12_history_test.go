@@ -1,20 +1,13 @@
-// git_bug_g12_history_test.go pins board row G12 (todo.md): FetchBranch's
+// git_bug_g12_history_test.go covers board row G12 (todo.md): FetchBranch's
 // (and by extension ImportRepo's, which auto-triggers FetchBranch on the
-// default branch) commit walk creates Commit rows via walkCommitsOnly, but
-// never writes the accompanying git_commit_parents join rows the way
-// git_impl_push.go's linkCommitParents does for the push path. Log resolves
-// history solely through gormstore.CommitChainIDs' recursive CTE over that
-// join table, so an unlinked tip reports a one-commit history however many
-// commits were actually indexed.
+// default branch) commit walk links each new commit to its parents
+// (linkCommitParents, shared with the push path). Log resolves history solely
+// through gormstore.CommitChainIDs' recursive CTE over git_commit_parents, so
+// without those rows an imported branch reported a one-commit history.
 //
-// This test builds a real 3-commit linear history (via the real git object
-// model, go-git PlainInit/Commit — not fixture rows), imports it through
-// the real ImportRepo → auto-FetchBranch path, and asserts the CURRENT
-// (broken) behaviour: Log returns only 1 commit even though 3 were
-// indexed. Once G12 is fixed (by reusing linkCommitParents from
-// git_impl_push.go inside walkCommitsOnly), this assertion should change to
-// len(history) == 3, newest-first, matching the fixed
-// TestSmartHTTP_PushedHistoryIsWalkable test for the push path.
+// The test builds a real 3-commit linear history (via the real git object
+// model, go-git PlainInit/Commit — not fixture rows) and imports it through
+// the real ImportRepo → auto-FetchBranch path.
 package mwanachamagit
 
 import (
@@ -87,12 +80,9 @@ func makeLocalGitSourceWithCommits(t *testing.T, n int) string {
 	return bareDir
 }
 
-// TestFetchBranch_PinG12_HistoryUnreachableAfterImport pins the CURRENT
-// broken behaviour: a real 3-commit history, imported end-to-end, reports
-// only 1 commit via Log because walkCommitsOnly never links
-// git_commit_parents. See this file's package doc for the fixed
-// assertion.
-func TestFetchBranch_PinG12_HistoryUnreachableAfterImport(t *testing.T) {
+// TestFetchBranch_ImportedHistoryIsWalkable: a real 3-commit history,
+// imported end-to-end, is fully reachable through Log, newest first.
+func TestFetchBranch_ImportedHistoryIsWalkable(t *testing.T) {
 	bareDir := makeLocalGitSourceWithCommits(t, 3)
 	ctx := context.Background()
 	m, pub := newTestManagerWithPublisher(t)
@@ -166,20 +156,26 @@ fetchPoll:
 		t.Fatalf("count commits: %v", err)
 	}
 	if commitCount != 3 {
-		t.Fatalf("expected walkCommitsOnly to have created 3 Commit rows, got %d — fixture problem, not G12 itself", commitCount)
+		t.Fatalf("expected 3 Commit rows, got %d", commitCount)
 	}
 
-	// The actual G12 assertion: Log only resolves history through
-	// git_commit_parents, which walkCommitsOnly never populates.
 	history, err := m.Log(ctx, branchID, LogFilter{})
 	if err != nil {
 		t.Fatalf("Log: %v", err)
 	}
-	if len(history) != 1 {
-		t.Fatalf("G12 REGRESSION-OR-FIX DETECTED: Log returned %d commits, want 1 (the pinned CURRENT broken behaviour). "+
-			"If this is now 3, G12 has been fixed (walkCommitsOnly now links git_commit_parents, e.g. via "+
-			"git_impl_push.go's linkCommitParents) — update this test to assert len(history) == 3, newest-first, "+
-			"parents linked, and close G12 on the board.", len(history))
+	if len(history) != 3 {
+		t.Fatalf("Log returned %d commits, want 3", len(history))
 	}
-	t.Logf("G12 pinned: real history has 3 commits, but Log(%s) reports only %d — git_commit_parents was never linked by walkCommitsOnly", branchID, len(history))
+	for i, want := range []string{"commit 3", "commit 2", "commit 1"} {
+		if history[i].Message != want {
+			t.Errorf("history[%d].Message = %q, want %q (newest first)", i, history[i].Message, want)
+		}
+	}
+	var links int64
+	if err := m.db.WithContext(ctx).Table(m.tables.CommitParents).Count(&links).Error; err != nil {
+		t.Fatalf("count commit parents: %v", err)
+	}
+	if links != 2 {
+		t.Errorf("git_commit_parents rows = %d, want 2 (root commit has none)", links)
+	}
 }
