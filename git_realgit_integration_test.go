@@ -578,20 +578,14 @@ func TestRealGit_MergePushLinksBothParents(t *testing.T) {
 	}
 }
 
-// TestRealGit_TagPushIsStoredInGitButNotIndexedAsABranch is the regression
-// test for the second defect real git surfaced: a pushed tag used to be
-// filed as a Branch row named "refs/tags/v1.0.0", because the branch name is
-// derived by trimming a refs/heads/ prefix the ref never had.
+// TestRealGit_TagPushIsIndexedAsTagNotBranch: a pushed tag is filed as a Tag
+// row (board row G13) and never as a Branch row named after the whole ref —
+// the regression real git first surfaced.
 //
 // Both tag kinds are pushed on purpose. A lightweight tag's ref points
-// straight at the commit and is what actually reached the branch-indexing
-// path; an annotated tag's ref points at a tag object instead, so it failed
-// differently (the indexer could not read it as a commit at all). Testing
-// only the annotated one would have left the real regression uncovered.
-//
-// It also pins the current, deliberate limit: the tags are stored in git and
-// clone back, but get no Tag row. Indexing pushed tags is board row G13.
-func TestRealGit_TagPushIsStoredInGitButNotIndexedAsABranch(t *testing.T) {
+// straight at the commit; an annotated tag's points at a tag object carrying
+// its own message and tagger, so the two reach the indexer differently.
+func TestRealGit_TagPushIsIndexedAsTagNotBranch(t *testing.T) {
 	m, base := newGitServer(t)
 	remote := base + "/widgets"
 	wc := newWorkingCopy(t, remote)
@@ -625,12 +619,53 @@ func TestRealGit_TagPushIsStoredInGitButNotIndexedAsABranch(t *testing.T) {
 		}
 	}
 
-	// Current limit, asserted so a future change to it is a deliberate one.
+	tip := strings.TrimSpace(mustGit(t, wc, "rev-parse", "HEAD"))
 	tags, err := m.ListTags(context.Background(), repoID)
 	if err != nil {
 		t.Fatalf("ListTags: %v", err)
 	}
-	if len(tags) != 0 {
-		t.Errorf("ListTags returned %d rows — pushed tags are not indexed today (G13); update this test with the fix", len(tags))
+	byName := map[string]Tag{}
+	for _, tg := range tags {
+		byName[tg.Name] = tg
+	}
+	if len(byName) != 2 {
+		t.Fatalf("ListTags returned %+v, want exactly v1.0.0 and v1.1.0", tags)
+	}
+	light, ok := byName["v1.0.0"]
+	if !ok || light.SHA != tip || light.Message != "" || light.TaggerName != "" {
+		t.Errorf("lightweight tag = %+v, want SHA %s and no message or tagger", light, tip)
+	}
+	annotated, ok := byName["v1.1.0"]
+	if !ok || annotated.SHA != tip || annotated.Message != "next release" || annotated.TaggerName == "" || annotated.TaggerAt == "" {
+		t.Errorf("annotated tag = %+v, want SHA %s (the commit, not the tag object), message %q and a tagger", annotated, tip, "next release")
+	}
+
+	// A tag pushed for a commit no branch carries indexes that commit too.
+	mustGit(t, wc, "checkout", "-b", "side")
+	commitFile(t, wc, "b.txt", "B\n", "side commit")
+	sideTip := strings.TrimSpace(mustGit(t, wc, "rev-parse", "HEAD"))
+	mustGit(t, wc, "tag", "v2.0.0")
+	mustGit(t, wc, "push", "origin", "v2.0.0")
+	tags, _ = m.ListTags(context.Background(), repoID)
+	var side *Tag
+	for i := range tags {
+		if tags[i].Name == "v2.0.0" {
+			side = &tags[i]
+		}
+	}
+	if side == nil || side.SHA != sideTip {
+		t.Errorf("tag on a branch-less commit = %+v, want SHA %s", side, sideTip)
+	}
+
+	// Deleting a tag over push removes its row.
+	mustGit(t, wc, "push", "origin", "--delete", "v1.0.0")
+	tags, _ = m.ListTags(context.Background(), repoID)
+	for _, tg := range tags {
+		if tg.Name == "v1.0.0" {
+			t.Errorf("v1.0.0 still listed after `git push --delete`: %+v", tags)
+		}
+	}
+	if len(tags) != 2 {
+		t.Errorf("after the delete want v1.1.0 and v2.0.0 left, got %+v", tags)
 	}
 }

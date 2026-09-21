@@ -58,11 +58,16 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 	start := time.Now()
 	log.Printf("[push-index] repo=%q ref=%q old=%s new=%s: start", repoName, branchRef, shortSHA(oldSHA), shortSHA(newSHA))
 
-	// Only refs/heads/* is a branch. A tag (or any other ref namespace) that
-	// reached here would otherwise be filed as a Branch row literally named
-	// "refs/tags/v1.0.0", since the name is derived by trimming a
-	// refs/heads/ prefix that isn't there. The ref itself is already stored
-	// in the bare repo either way; it just isn't a branch to index.
+	// refs/tags/* is indexed as a Tag, not a Branch.
+	if strings.HasPrefix(branchRef, tagRefPrefix) {
+		return m.indexPushedTag(ctx, repoName, branchRef, newSHA)
+	}
+
+	// Only refs/heads/* is a branch. Any other ref namespace that reached
+	// here would otherwise be filed as a Branch row literally named after the
+	// whole ref, since the name is derived by trimming a refs/heads/ prefix
+	// that isn't there. The ref itself is already stored in the bare repo
+	// either way; it just isn't a branch to index.
 	if !strings.HasPrefix(branchRef, branchRefPrefix) {
 		log.Printf("[push-index] repo=%q ref=%q: not a branch ref — stored in git, not indexed as a Branch", repoName, branchRef)
 		return nil

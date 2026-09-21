@@ -280,6 +280,7 @@ func (h *smartHTTPHandler) receivePackDeletes(w http.ResponseWriter, ctx context
 			cs.Status = rmErr.Error()
 		} else if repoRow.ID != "" {
 			h.deleteBranchRowForRef(ctx, repoRow.ID, cmd.Name.String())
+			h.deleteTagRowForRef(ctx, repoRow.ID, cmd.Name.String())
 		}
 		status.CommandStatuses = append(status.CommandStatuses, cs)
 	}
@@ -371,4 +372,27 @@ func httpErrorFromTransport(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+}
+
+// deleteTagRowForRef soft-deletes the Tag row matching tagRef, if one exists
+// — best-effort, the same as deleteBranchRowForRef.
+func (h *smartHTTPHandler) deleteTagRowForRef(ctx context.Context, repoID, tagRef string) {
+	if !strings.HasPrefix(tagRef, tagRefPrefix) {
+		return
+	}
+	tagName := strings.TrimPrefix(tagRef, tagRefPrefix)
+	tags, err := h.m.ListTags(ctx, repoID)
+	if err != nil {
+		log.Printf("[receive-pack] repo=%s: deleteTagRowForRef: ListTags: %v", repoID, err)
+		return
+	}
+	for _, t := range tags {
+		if t.Name != tagName {
+			continue
+		}
+		if err := h.m.DeleteTag(ctx, t.ID); err != nil {
+			log.Printf("[receive-pack] repo=%s: deleteTagRowForRef: DeleteTag %q: %v (git ref already removed)", repoID, tagName, err)
+		}
+		return
+	}
 }
