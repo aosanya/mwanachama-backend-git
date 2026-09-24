@@ -268,3 +268,36 @@ a separate, not-yet-done change — see the scope note above.
   [documentation/3. implementation/todo.md](documentation/3.%20implementation/todo.md).
 - Four-phase `documentation/` layout — see
   [documentation/README.md](documentation/README.md).
+
+## Code comments
+
+Write code with no comments. Not one-liners above a function, not section
+banners, not doc comments on exported symbols, not "why" notes next to a
+tricky line. A name, a type, or a smaller function carries it instead.
+
+Anything that genuinely needs explaining goes in this repo's `documentation/`
+folder, under the phase it belongs to (`1. requirements`, `2. design`,
+`3. implementation`, `4. qa`) — never inline.
+
+**Why:** inline prose drifts out of sync with the code, duplicates what
+`documentation/` already owns, and buries the explanation where nobody
+looking for it will search.
+
+**How to apply:**
+
+- New code ships without comments. If a line seems to need one, rename or
+  split until it doesn't.
+- Touching code that already has comments: strip the ones in the code you are
+  changing. Do not sweep untouched files unless asked.
+- If the reasoning matters, add or update the matching `documentation/` page
+  in the same change and leave nothing behind in the source.
+- Machine-read directives are not comments and stay: build tags, `//go:embed`,
+  `//go:generate`, linter pragmas (`//nolint`, `// eslint-disable-next-line`,
+  `// ignore:`), license headers, codegen "do not edit" banners, and generated
+  files as a whole.
+- Commit messages, PR descriptions, and test names carry the narration that
+  used to go in comments.
+
+This rule is repeated verbatim in every mwanachama repo's `CLAUDE.md` so that
+it reaches sessions that do not load this machine's user-level config —
+scheduled cloud routines, other machines, and other agent harnesses.
