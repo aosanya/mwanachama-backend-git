@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // countTaggedWith returns the number of tagged_with rows for blobID scoped
@@ -143,7 +143,7 @@ func TestEdgeLifecycle_022a_References(t *testing.T) {
 		t.Fatalf("MergeBranch: %v", err)
 	}
 
-	var rows []gormstore.BlobReferenceRow
+	var rows []models.BlobReference
 	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 		Where("from_blob_id = ? AND name = ?", blobB, "references").Find(&rows).Error; err != nil {
 		t.Fatalf("query BlobReferences: %v", err)

@@ -2,6 +2,7 @@ package mwanachamagit
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -34,11 +35,18 @@ func newTestManager(t *testing.T) *gitManager {
 	if sqlDB, err := db.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(1)
 	}
-	tables := DefaultTableNames("test")
-	if err := Migrate(db, tables); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	s, err := LoadSpec(filepath.Join("spec", "examples", "engineering.git.json"))
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
 	}
-	return &gitManager{db: db, tables: tables, locker: &mutexLocker{}}
+	if err := Provision(db, s); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	st, err := newStore(db, s)
+	if err != nil {
+		t.Fatalf("newStore: %v", err)
+	}
+	return &gitManager{db: db, store: st, tables: tablesOf(st), locker: &mutexLocker{}}
 }
 
 // newTestManagerWithPublisher is newTestManager plus a fakePublisher for
@@ -96,7 +104,7 @@ func hasTopic(events []publishedEvent, topic string) bool {
 }
 
 func TestNewGitManager_NilDB(t *testing.T) {
-	if _, err := NewGitManager(nil, DefaultTableNames("test"), nil, nil, nil); err == nil {
+	if _, err := NewGitManager(nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("expected error for nil db")
 	}
 }

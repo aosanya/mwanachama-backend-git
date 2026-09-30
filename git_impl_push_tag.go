@@ -11,7 +11,6 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -27,7 +26,7 @@ const tagRefPrefix = "refs/tags/"
 // Tags are immutable in this index: a name already filed is left as it is,
 // even if a forced push has since moved the ref in git itself.
 func (m *gitManager) indexPushedTag(ctx context.Context, repoName, tagRef, newSHA string) error {
-	var repoRow gormstore.RepositoryRow
+	var repoRow models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("name = ? AND NOT deleted", repoName).First(&repoRow).Error; err != nil {
 		return fmt.Errorf("indexPushedTag %s/%s: find repository: %w", repoName, tagRef, err)
@@ -74,7 +73,7 @@ func (m *gitManager) indexPushedTag(ctx context.Context, repoName, tagRef, newSH
 	if _, err := m.walkNewCommits(ctx, repo, commitHash, ""); err != nil {
 		return fmt.Errorf("indexPushedTag %s/%s: index tagged commit: %w", repoName, tagRef, err)
 	}
-	var commitRow gormstore.CommitRow
+	var commitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("sha = ?", commitHash.String()).First(&commitRow).Error; err != nil {
 		return fmt.Errorf("indexPushedTag %s/%s: find commit row for %s: %w", repoName, tagRef, shortSHA(commitHash.String()), err)
 	}
@@ -83,7 +82,7 @@ func (m *gitManager) indexPushedTag(ctx context.Context, repoName, tagRef, newSH
 	if taggerAt == "" {
 		taggerAt = now
 	}
-	row := gormstore.TagToRow(models.Tag{
+	row := models.Tag{
 		RepositoryID: repoRow.ID,
 		Name:         name,
 		SHA:          commitRow.SHA,
@@ -91,7 +90,9 @@ func (m *gitManager) indexPushedTag(ctx context.Context, repoName, tagRef, newSH
 		TaggerName:   taggerName,
 		TaggerAt:     taggerAt,
 		CreatedAt:    now,
-	}, commitRow.ID)
+		CommitID:     commitRow.ID,
+	}
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Tags).Create(&row).Error; err != nil {
 		return fmt.Errorf("indexPushedTag %s/%s: create tag: %w", repoName, tagRef, err)
 	}

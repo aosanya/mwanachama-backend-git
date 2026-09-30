@@ -1,6 +1,8 @@
 package mwanachamagit
 
 import (
+	"reflect"
+
 	"gorm.io/gorm"
 
 	"github.com/aosanya/mwanachama-backend-shared/spec"
@@ -97,4 +99,38 @@ func tablesOf(st *store) tableSet {
 		ImportJobs:      st.Table(roleImportJob),
 		FetchBranchJobs: st.Table(roleFetchBranchJob),
 	}
+}
+
+func commitParentsOf(commitID string, parentIDs []string) []models.CommitParent {
+	rows := make([]models.CommitParent, len(parentIDs))
+	for i, id := range parentIDs {
+		rows[i] = models.CommitParent{CommitID: commitID, ParentID: id, ParentIndex: i}
+	}
+	return rows
+}
+
+func ensureID(row any) {
+	v := reflect.ValueOf(row)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return
+	}
+	v = v.Elem()
+	if v.Kind() == reflect.Slice {
+		for i := range v.Len() {
+			mintID(v.Index(i))
+		}
+		return
+	}
+	mintID(v)
+}
+
+func mintID(v reflect.Value) {
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	f := v.FieldByName("ID")
+	if !f.IsValid() || !f.CanSet() || f.Kind() != reflect.String || f.String() != "" {
+		return
+	}
+	f.SetString(newID())
 }

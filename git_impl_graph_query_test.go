@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -26,9 +25,10 @@ import (
 // branch_id columns are set exactly as a real sync would write them.
 func seedTaggedWith(t *testing.T, m *gitManager, blobID, kwID, signal, branchID string) {
 	t.Helper()
-	row := gormstore.BlobKeywordTagRow{
+	row := models.BlobKeywordTag{
 		BranchID: branchID, BlobID: blobID, KeywordID: kwID, Signal: signal, CreatedAt: models.NowRFC3339(),
 	}
+	ensureID(&row)
 	if err := m.db.WithContext(context.Background()).Table(m.tables.BlobKeywordTags).Create(&row).Error; err != nil {
 		t.Fatalf("seedTaggedWith: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestQueryGraph_SignalFilter(t *testing.T) {
 
 	pathSignal := map[string]string{"high.go": "authority", "low.go": "surface"}
 	blobsByID := map[string]string{}
-	var allBlobs []gormstore.BlobRow
+	var allBlobs []models.Blob
 	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	for _, b := range allBlobs {
 		sig := pathSignal[b.Path]
@@ -208,7 +208,7 @@ func TestQueryGraph_KeywordIDFilter(t *testing.T) {
 	kwA, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwA", Scope: "agency"})
 	kwB, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwB", Scope: "agency"})
 
-	var allBlobs []gormstore.BlobRow
+	var allBlobs []models.Blob
 	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	var aID, bID string
 	for _, b := range allBlobs {
@@ -241,7 +241,7 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 	writeTestFile(t, m, branch.ID, "y.go", "package y")
 
 	kw, _ := m.CreateKeyword(ctx, CreateKeywordRequest{Name: "kwE", Scope: "agency"})
-	var allBlobs []gormstore.BlobRow
+	var allBlobs []models.Blob
 	m.db.WithContext(ctx).Table(m.tables.Blobs).Find(&allBlobs)
 	var xID, yID string
 	for _, b := range allBlobs {
@@ -253,7 +253,7 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 		}
 		seedTaggedWith(t, m, b.ID, kw.ID, "surface", branch.ID)
 	}
-	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).Create(&gormstore.BlobReferenceRow{
+	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).Create(&models.BlobReference{
 		BranchID: branch.ID, FromBlobID: xID, Name: "references", ToBlobID: yID,
 		Descriptor: "depends_on", CreatedAt: models.NowRFC3339(),
 	}).Error; err != nil {
@@ -286,9 +286,10 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 // neighborhoodTestNode creates a bare Commit row for use as a graph-traversal
 // fixture — GetNeighborhood doesn't care what a node's own fields are, only
 // how it's connected via git_commit_parents.
-func neighborhoodTestNode(t *testing.T, m *gitManager, name string) gormstore.CommitRow {
+func neighborhoodTestNode(t *testing.T, m *gitManager, name string) models.Commit {
 	t.Helper()
-	row := gormstore.CommitToRow(models.Commit{SHA: name, Message: name, CreatedAt: models.NowRFC3339()})
+	row := models.Commit{SHA: name, Message: name, CreatedAt: models.NowRFC3339()}
+	ensureID(&row)
 	if err := m.db.WithContext(context.Background()).Table(m.tables.Commits).Create(&row).Error; err != nil {
 		t.Fatalf("create node %q: %v", name, err)
 	}
@@ -301,7 +302,7 @@ func neighborhoodTestNode(t *testing.T, m *gitManager, name string) gormstore.Co
 func neighborhoodTestEdge(t *testing.T, m *gitManager, fromID, toID string) {
 	t.Helper()
 	if err := m.db.WithContext(context.Background()).Table(m.tables.CommitParents).
-		Create(&gormstore.CommitParentRow{CommitID: fromID, ParentID: toID}).Error; err != nil {
+		Create(&models.CommitParent{CommitID: fromID, ParentID: toID}).Error; err != nil {
 		t.Fatalf("link %s -> %s: %v", fromID, toID, err)
 	}
 }
@@ -365,7 +366,7 @@ func TestGetNeighborhood_DepthClamp(t *testing.T) {
 	branchID := neighborhoodTestBranch(t, m)
 
 	// Chain: n0 -> n1 -> n2 -> n3 -> n4 (5 nodes, 4 hops).
-	nodes := make([]gormstore.CommitRow, 5)
+	nodes := make([]models.Commit, 5)
 	for i := range nodes {
 		nodes[i] = neighborhoodTestNode(t, m, fmt.Sprintf("n%d", i))
 	}
@@ -440,7 +441,7 @@ func TestGetNeighborhood_NodeCapEnforced(t *testing.T) {
 // out to far more leaves than the remaining node budget (100 - 4 already
 // visited = 96), so processing hub1's own edges exhausts the cap by itself.
 // hub2's only edge (hub2 -> witness) must still be discoverable since
-// [gormstore.NeighborhoodEdges] queries the whole frontier in one shot per
+// [NeighborhoodEdges] queries the whole frontier in one shot per
 // level, not per-node.
 func TestGetNeighborhood_EdgeBetweenIncludedNodesSurvivesCap(t *testing.T) {
 	ctx := context.Background()

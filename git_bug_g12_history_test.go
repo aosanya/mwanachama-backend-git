@@ -2,7 +2,7 @@
 // (and by extension ImportRepo's, which auto-triggers FetchBranch on the
 // default branch) commit walk links each new commit to its parents
 // (linkCommitParents, shared with the push path). Log resolves history solely
-// through gormstore.CommitChainIDs' recursive CTE over git_commit_parents, so
+// through CommitChainIDs' recursive CTE over git_commit_parents, so
 // without those rows an imported branch reported a one-commit history.
 //
 // The test builds a real 3-commit linear history (via the real git object
@@ -22,7 +22,7 @@ import (
 	gogitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // makeLocalGitSourceWithCommits is [makeLocalGitSource] extended to write n
@@ -133,7 +133,7 @@ fetchPoll:
 		case <-fetchDeadline:
 			t.Fatalf("default branch never reached status=fetched")
 		case <-time.After(50 * time.Millisecond):
-			var branchRow gormstore.BranchRow
+			var branchRow models.Branch
 			if err := m.db.WithContext(ctx).Table(m.tables.Branches).
 				Where("repository_id = ? AND name = ?", repo.ID, "master").First(&branchRow).Error; err != nil {
 				continue

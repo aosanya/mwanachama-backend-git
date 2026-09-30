@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -182,9 +181,10 @@ func TestImportRepoRejectsIfImportInProgress(t *testing.T) {
 	m := newTestManager(t)
 	now := models.NowRFC3339()
 
-	jobRow := gormstore.ImportJobToRow(models.ImportJob{
+	jobRow := models.ImportJob{
 		SourceURL: "https://example.com/first.git", Status: "pending", CreatedAt: now, UpdatedAt: now,
-	})
+	}
+	ensureID(&jobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Create(&jobRow).Error; err != nil {
 		t.Fatalf("seed ImportJob: %v", err)
 	}
@@ -215,9 +215,10 @@ func TestCancelImportTerminalState(t *testing.T) {
 			m := newTestManager(t)
 			now := models.NowRFC3339()
 
-			jobRow := gormstore.ImportJobToRow(models.ImportJob{
+			jobRow := models.ImportJob{
 				SourceURL: "https://example.com/repo.git", Status: status, CreatedAt: now, UpdatedAt: now,
-			})
+			}
+			ensureID(&jobRow)
 			if err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Create(&jobRow).Error; err != nil {
 				t.Fatalf("seed ImportJob: %v", err)
 			}

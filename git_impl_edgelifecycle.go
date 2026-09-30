@@ -30,7 +30,6 @@ import (
 
 	"gorm.io/gorm/clause"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -63,14 +62,14 @@ func (m *gitManager) replicateDocEdges(ctx context.Context, sourceBranchID, defa
 // to defaultBranchID. Duplicate rows are silently ignored (ON CONFLICT DO
 // NOTHING) — best-effort, matching the entitygraph-era "log and continue".
 func (m *gitManager) replicateTaggedWith(ctx context.Context, blobIDs []string, sourceBranchID, defaultBranchID string) {
-	var rows []gormstore.BlobKeywordTagRow
+	var rows []models.BlobKeywordTag
 	if err := m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
 		Where("branch_id = ? AND blob_id IN ?", sourceBranchID, blobIDs).Find(&rows).Error; err != nil {
 		return
 	}
 	now := models.NowRFC3339()
 	for _, r := range rows {
-		newRow := gormstore.BlobKeywordTagRow{
+		newRow := models.BlobKeywordTag{
 			BranchID: defaultBranchID, BlobID: r.BlobID, KeywordID: r.KeywordID,
 			Signal: r.Signal, Note: r.Note, CreatedAt: now,
 		}
@@ -84,7 +83,7 @@ func (m *gitManager) replicateTaggedWith(ctx context.Context, blobIDs []string, 
 // replicateReferences copies "references" rows (never "referenced_by" — see
 // this file's doc) for blobIDs from sourceBranchID to defaultBranchID.
 func (m *gitManager) replicateReferences(ctx context.Context, blobIDs []string, sourceBranchID, defaultBranchID string) {
-	var rows []gormstore.BlobReferenceRow
+	var rows []models.BlobReference
 	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 		Where("branch_id = ? AND from_blob_id IN ? AND name = ?", sourceBranchID, blobIDs, "references").
 		Find(&rows).Error; err != nil {
@@ -92,7 +91,7 @@ func (m *gitManager) replicateReferences(ctx context.Context, blobIDs []string, 
 	}
 	now := models.NowRFC3339()
 	for _, r := range rows {
-		newRow := gormstore.BlobReferenceRow{
+		newRow := models.BlobReference{
 			BranchID: defaultBranchID, FromBlobID: r.FromBlobID, Name: r.Name, ToBlobID: r.ToBlobID,
 			Descriptor: r.Descriptor, CreatedAt: now,
 		}
@@ -125,10 +124,10 @@ func (m *gitManager) deleteDocEdgesForBranch(ctx context.Context, branchID, head
 	}
 	_ = m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
 		Where("branch_id = ? AND blob_id IN ?", branchID, blobIDs).
-		Delete(&gormstore.BlobKeywordTagRow{}).Error
+		Delete(&models.BlobKeywordTag{}).Error
 	_ = m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 		Where("branch_id = ? AND from_blob_id IN ? AND name = ?", branchID, blobIDs, "references").
-		Delete(&gormstore.BlobReferenceRow{}).Error
+		Delete(&models.BlobReference{}).Error
 }
 
 // ── GIT-022c: Remove edges on file delete ────────────────────────────────────
@@ -138,10 +137,10 @@ func (m *gitManager) deleteDocEdgesForBranch(ctx context.Context, branchID, head
 func (m *gitManager) deleteDocEdgesForBlob(ctx context.Context, blobID, branchID string) {
 	_ = m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
 		Where("branch_id = ? AND blob_id = ?", branchID, blobID).
-		Delete(&gormstore.BlobKeywordTagRow{}).Error
+		Delete(&models.BlobKeywordTag{}).Error
 	_ = m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 		Where("branch_id = ? AND from_blob_id = ? AND name = ?", branchID, blobID, "references").
-		Delete(&gormstore.BlobReferenceRow{}).Error
+		Delete(&models.BlobReference{}).Error
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

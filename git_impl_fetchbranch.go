@@ -26,7 +26,6 @@ import (
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -54,7 +53,7 @@ var fetchJobs = make(map[string]fetchCancelEntry)
 // Returns immediately with a [models.FetchBranchJob]. Returns
 // [ErrBranchAlreadyFetched] if the branch status is "fetching" or "fetched".
 func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (models.FetchBranchJob, error) {
-	var branchRow gormstore.BranchRow
+	var branchRow models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("id = ? AND NOT deleted", req.BranchID).First(&branchRow).Error
 	if err != nil {
@@ -73,11 +72,12 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (m
 	// a HEAD commit, its commits/trees/blobs were populated by push-indexing
 	// (or a prior successful fetch) and the objects live in the local clone
 	// — re-cloning from source_url is unnecessary.
-	if branchRow.HeadCommitID != nil && *branchRow.HeadCommitID != "" {
-		jobRow := gormstore.FetchBranchJobToRow(models.FetchBranchJob{
+	if branchRow.HeadCommitID != "" {
+		jobRow := models.FetchBranchJob{
 			RepoID: req.RepoID, BranchName: branchRow.Name,
 			Status: fetchJobStatusCompleted, CreatedAt: now, UpdatedAt: now,
-		})
+		}
+		ensureID(&jobRow)
 		if err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Create(&jobRow).Error; err != nil {
 			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job row: %w", req.BranchID, err)
 		}
@@ -85,18 +85,19 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (m
 			Updates(map[string]any{"status": branchStatusFetched, "updated_at": now}).Error; err != nil {
 			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: mark fetched: %w", req.BranchID, err)
 		}
-		return gormstore.FetchBranchJobFromRow(jobRow), nil
+		return jobRow, nil
 	}
 
-	jobRow := gormstore.FetchBranchJobToRow(models.FetchBranchJob{
+	jobRow := models.FetchBranchJob{
 		RepoID: req.RepoID, BranchName: branchRow.Name,
 		Status: fetchJobStatusPending, CreatedAt: now, UpdatedAt: now,
-	})
+	}
+	ensureID(&jobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Create(&jobRow).Error; err != nil {
 		return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: create job row: %w", req.BranchID, err)
 	}
 	jobID := jobRow.ID
-	job := gormstore.FetchBranchJobFromRow(jobRow)
+	job := jobRow
 
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", req.BranchID).
 		Updates(map[string]any{"status": branchStatusFetching, "updated_at": now}).Error; err != nil {
@@ -116,7 +117,7 @@ func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (m
 // GetFetchBranchStatus returns the current state of a fetch job.
 // Returns [ErrImportJobNotFound] if no job with the given ID exists.
 func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (models.FetchBranchJob, error) {
-	var row gormstore.FetchBranchJobRow
+	var row models.FetchBranchJob
 	err := m.db.WithContext(ctx).Table(m.tables.FetchBranchJobs).Where("id = ?", jobID).First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -124,7 +125,7 @@ func (m *gitManager) GetFetchBranchStatus(ctx context.Context, jobID string) (mo
 		}
 		return models.FetchBranchJob{}, fmt.Errorf("GetFetchBranchStatus %s: %w", jobID, err)
 	}
-	return gormstore.FetchBranchJobFromRow(row), nil
+	return row, nil
 }
 
 // runFetchBranch is the background goroutine started by [FetchBranch].
@@ -148,14 +149,14 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 		return
 	}
 
-	var repoRow gormstore.RepositoryRow
+	var repoRow models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Where("id = ?", repoID).First(&repoRow).Error; err != nil {
 		fail(fmt.Sprintf("get repo row %s: %v", repoID, err))
 		return
 	}
 	sourceURL := repoRow.SourceURL
 	if sourceURL == "" {
-		var branchRow gormstore.BranchRow
+		var branchRow models.Branch
 		if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchID).First(&branchRow).Error; err == nil {
 			sourceURL = branchRow.SourceURL
 		}
@@ -212,7 +213,7 @@ func (m *gitManager) runFetchBranch(ctx context.Context, jobID, repoID, branchID
 	}
 
 	tipSHA := ref.Hash().String()
-	var headCommitRow gormstore.CommitRow
+	var headCommitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("sha = ?", tipSHA).First(&headCommitRow).Error; err == nil {
 		if rootTreeID != "" {
 			_ = m.db.WithContext(ctx).Table(m.tables.Commits).Where("id = ?", headCommitRow.ID).
@@ -276,7 +277,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 	defer iter.Close()
 
 	now := models.NowRFC3339()
-	var rows []gormstore.CommitRow
+	var rows []models.Commit
 	parentSHAs := map[string][]string{}
 	if err := iter.ForEach(func(c *gogitobject.Commit) error {
 		if ctx.Err() != nil {
@@ -290,7 +291,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 		for _, p := range c.ParentHashes {
 			parentSHAs[sha] = append(parentSHAs[sha], p.String())
 		}
-		rows = append(rows, gormstore.CommitToRow(models.Commit{
+		rows = append(rows, models.Commit{
 			SHA:            sha,
 			Message:        c.Message,
 			AuthorName:     c.Author.Name,
@@ -300,7 +301,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 			CommitterEmail: c.Committer.Email,
 			CommittedAt:    c.Committer.When.UTC().Format(time.RFC3339),
 			CreatedAt:      now,
-		}))
+		})
 		return nil
 	}); err != nil {
 		return err
@@ -309,6 +310,7 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 		return nil
 	}
 	t0 := time.Now()
+	ensureID(&rows)
 	err = m.db.WithContext(ctx).Table(m.tables.Commits).CreateInBatches(&rows, 200).Error
 	if elapsed := time.Since(t0); elapsed > 500*time.Millisecond {
 		log.Printf("[fetchbranch] SLOW bulk-insert %d commits took %s", len(rows), elapsed)
@@ -325,7 +327,8 @@ func (m *gitManager) walkCommitsOnly(ctx context.Context, repo *gogit.Repository
 // Recursive for subdirectories.
 func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogit.Repository, tree *gogitobject.Tree, pathPrefix, now string) (string, error) {
 	treeSHA := tree.Hash.String()
-	treeRow := gormstore.TreeToRow(models.Tree{SHA: treeSHA, Path: pathPrefix, CreatedAt: now})
+	treeRow := models.Tree{SHA: treeSHA, Path: pathPrefix, CreatedAt: now}
+	ensureID(&treeRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
 		return "", fmt.Errorf("create tree %s path=%q: %w", treeSHA, pathPrefix, err)
 	}
@@ -349,7 +352,7 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			if blobID != "" {
 				if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
 					Clauses(clause.OnConflict{DoNothing: true}).
-					Create(&gormstore.TreeBlobRow{TreeID: treeID, BlobID: blobID}).Error; err != nil {
+					Create(&models.TreeBlob{TreeID: treeID, BlobID: blobID}).Error; err != nil {
 					log.Printf("[upsertTree] link tree_blobs path=%q: %v (non-fatal)", entryPath, err)
 				}
 			}
@@ -368,7 +371,7 @@ func (m *gitManager) upsertTreeMetadataWithEdges(ctx context.Context, repo *gogi
 			if subTreeID != "" {
 				if err := m.db.WithContext(ctx).Table(m.tables.TreeSubtrees).
 					Clauses(clause.OnConflict{DoNothing: true}).
-					Create(&gormstore.TreeSubtreeRow{TreeID: treeID, SubtreeID: subTreeID}).Error; err != nil {
+					Create(&models.TreeSubtree{TreeID: treeID, SubtreeID: subTreeID}).Error; err != nil {
 					log.Printf("[upsertTree] link tree_subtrees path=%q: %v (non-fatal)", entryPath, err)
 				}
 			}
@@ -396,14 +399,15 @@ func (m *gitManager) upsertBlobMetadataWithID(ctx context.Context, repo *gogit.R
 	ext := strings.TrimPrefix(filepath.Ext(entry.Name), ".")
 	name := filepath.Base(fullPath)
 
-	row := gormstore.BlobToRow(models.Blob{
+	row := models.Blob{
 		SHA:       blobSHA,
 		Path:      fullPath,
 		Name:      name,
 		Extension: ext,
 		Size:      blobSize,
 		CreatedAt: now,
-	})
+	}
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&row).Error; err != nil {
 		return "", fmt.Errorf("create blob metadata %s path=%q: %w", blobSHA, fullPath, err)
 	}

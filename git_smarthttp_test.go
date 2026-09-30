@@ -13,7 +13,7 @@ import (
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // pushOneCommit clones srvURL/repoName into a fresh temp working copy (or
@@ -263,7 +263,7 @@ func TestSmartHTTP_IdenticalContentAtTwoPathsKeepsBothFiles(t *testing.T) {
 
 // TestSmartHTTP_PushedHistoryIsWalkable pushes three commits and confirms
 // Log walks the whole chain back from the tip. Log resolves history through
-// gormstore.CommitChainIDs' recursive CTE over git_commit_parents, so a push
+// CommitChainIDs' recursive CTE over git_commit_parents, so a push
 // that materialises Commit rows without linking them reports a one-commit
 // history — the rows exist but nothing can reach them.
 func TestSmartHTTP_PushedHistoryIsWalkable(t *testing.T) {
@@ -387,7 +387,7 @@ func TestSmartHTTP_MergeCommitRecordsBothParentsInOrder(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	var mergeRow gormstore.CommitRow
+	var mergeRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("sha = ?", mergeSHA.String()).First(&mergeRow).Error; err != nil {
 		t.Fatalf("find merge commit row: %v", err)

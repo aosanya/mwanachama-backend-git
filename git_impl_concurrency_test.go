@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -141,11 +140,13 @@ func TestGIT011_AdvanceBranchHead_StaleHeadReturnsConflict(t *testing.T) {
 	m := newTestManager(t)
 	const actualHead = "commit-current"
 
-	branchRow := gormstore.BranchToRow(models.Branch{Name: "stale-head", HeadCommitID: actualHead})
+	branchRow := models.Branch{Name: "stale-head", HeadCommitID: actualHead}
+	ensureID(&branchRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
-	commitRow := gormstore.CommitToRow(models.Commit{SHA: "abc123"})
+	commitRow := models.Commit{SHA: "abc123"}
+	ensureID(&commitRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
@@ -164,11 +165,13 @@ func TestGIT011_AdvanceBranchHead_MatchingHeadSucceeds(t *testing.T) {
 	m := newTestManager(t)
 	const currentHead = "commit-current2"
 
-	branchRow := gormstore.BranchToRow(models.Branch{Name: "matching-head", HeadCommitID: currentHead})
+	branchRow := models.Branch{Name: "matching-head", HeadCommitID: currentHead}
+	ensureID(&branchRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("seed branch: %v", err)
 	}
-	commitRow := gormstore.CommitToRow(models.Commit{SHA: "def456"})
+	commitRow := models.Commit{SHA: "def456"}
+	ensureID(&commitRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}

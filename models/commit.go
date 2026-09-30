@@ -16,5 +16,5 @@ type Commit struct {
 	Size           int64    `json:"-"`
 	CreatedAt      string   `json:"created_at"`
 	Deleted        bool     `json:"-"`
-	ParentIDs      []string `json:"parent_ids,omitempty" spec:"-"`
+	ParentIDs      []string `json:"parent_ids,omitempty" spec:"-" gorm:"-"`
 }

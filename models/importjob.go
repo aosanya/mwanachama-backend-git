@@ -10,7 +10,7 @@ type ImportJob struct {
 	CreatedAt     string   `json:"created_at"`
 	UpdatedAt     string   `json:"updated_at"`
 	Deleted       bool     `json:"-"`
-	ProgressSteps []string `json:"progress_steps,omitempty" spec:"-"`
+	ProgressSteps []string `json:"progress_steps,omitempty" spec:"-" gorm:"-"`
 }
 
 const (

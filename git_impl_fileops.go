@@ -24,7 +24,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -206,7 +205,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	blobHash := blobObj.Hash()
 	blobSHA := blobHash.String()
 
-	blobRow := gormstore.BlobToRow(models.Blob{
+	blobRow := models.Blob{
 		SHA:       blobSHA,
 		Path:      req.Path,
 		Name:      fileName(req.Path),
@@ -215,8 +214,9 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 		Encoding:  encoding,
 		Content:   req.Content,
 		CreatedAt: now,
-	})
+	}
 	blobRow.Data = blobDataB64
+	ensureID(&blobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
 		return models.Commit{}, fmt.Errorf("WriteFile: create blob: %w", err)
 	}
@@ -226,7 +226,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	var parentHashes []plumbing.Hash
 	if branch.HeadCommitID != "" {
 		parentIDs = []string{branch.HeadCommitID}
-		var parentRow gormstore.CommitRow
+		var parentRow models.Commit
 		if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 			Where("id = ?", branch.HeadCommitID).First(&parentRow).Error; err != nil {
 			return models.Commit{}, fmt.Errorf("WriteFile: get parent commit: %w", err)
@@ -270,10 +270,11 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	// by any edge. Not fixed here; a behavior-preserving port.
 	var rootTreeID string
 	for _, tr := range treeRecords {
-		treeRow := gormstore.TreeToRow(models.Tree{SHA: tr.sha, Path: tr.path, CreatedAt: now})
+		treeRow := models.Tree{SHA: tr.sha, Path: tr.path, CreatedAt: now}
 		treeRow.Entries = tr.entries
 		treeRow.Data = base64.StdEncoding.EncodeToString(tr.rawData)
 		treeRow.Size = tr.size
+		ensureID(&treeRow)
 		if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
 			return models.Commit{}, fmt.Errorf("WriteFile: create tree row path=%q: %w", tr.path, err)
 		}
@@ -312,7 +313,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 	commitDataB64 := base64.StdEncoding.EncodeToString(commitRaw)
 	commitSHA := commitMemObj.Hash().String()
 
-	commitRow := gormstore.CommitToRow(models.Commit{
+	commitRow := models.Commit{
 		SHA:            commitSHA,
 		Message:        message,
 		AuthorName:     req.AuthorName,
@@ -323,26 +324,28 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 		CommittedAt:    now,
 		TreeID:         rootTreeID,
 		CreatedAt:      now,
-	})
-	commitRow.RepositoryID = gormstore.StringToNullable(repo.ID)
+	}
+	commitRow.RepositoryID = repo.ID
 	commitRow.Data = commitDataB64
 	commitRow.Size = commitMemObj.Size()
+	ensureID(&commitRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		return models.Commit{}, fmt.Errorf("WriteFile: create commit: %w", err)
 	}
 
 	// ── 6. Wire edges ─────────────────────────────────────────────────────────
 	if len(parentIDs) > 0 {
-		parentRows := gormstore.CommitParentsToRows(commitRow.ID, parentIDs)
+		parentRows := commitParentsOf(commitRow.ID, parentIDs)
+		ensureID(&parentRows)
 		if err := m.db.WithContext(ctx).Table(m.tables.CommitParents).Create(&parentRows).Error; err != nil {
 			return models.Commit{}, fmt.Errorf("WriteFile: link parents: %w", err)
 		}
 	}
 	// Wire root tree → every blob so allBlobsAtCommit finds them all (flat,
 	// matching the pre-GORM has_blob wiring — see step 4's note).
-	treeBlobRows := make([]gormstore.TreeBlobRow, 0, len(blobEntityByPath))
+	treeBlobRows := make([]models.TreeBlob, 0, len(blobEntityByPath))
 	for _, blobID := range blobEntityByPath {
-		treeBlobRows = append(treeBlobRows, gormstore.TreeBlobRow{TreeID: rootTreeID, BlobID: blobID})
+		treeBlobRows = append(treeBlobRows, models.TreeBlob{TreeID: rootTreeID, BlobID: blobID})
 	}
 	if len(treeBlobRows) > 0 {
 		if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
@@ -356,7 +359,7 @@ func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) 
 		return models.Commit{}, fmt.Errorf("WriteFile: advance branch head: %w", err)
 	}
 
-	commit := gormstore.CommitFromRow(commitRow)
+	commit := commitRow
 	commit.RepositoryID = repo.ID
 	commit.ParentIDs = parentIDs
 	m.publish(ctx, TopicFileWritten, FileWrittenPayload{
@@ -603,25 +606,25 @@ func (m *gitManager) findBlobAtCommit(ctx context.Context, commitID, path string
 }
 
 // walkCommitChain returns startCommitID and its ancestors (newest-first),
-// via [gormstore.CommitChainIDs], up to limit commits (0 = no limit).
-func (m *gitManager) walkCommitChain(ctx context.Context, startCommitID string, limit int) ([]gormstore.CommitRow, error) {
-	ids, err := gormstore.CommitChainIDs(m.db.WithContext(ctx), m.tables, startCommitID, limit)
+// via [CommitChainIDs], up to limit commits (0 = no limit).
+func (m *gitManager) walkCommitChain(ctx context.Context, startCommitID string, limit int) ([]models.Commit, error) {
+	ids, err := CommitChainIDs(m.db.WithContext(ctx), m.tables, startCommitID, limit)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	var rows []gormstore.CommitRow
+	var rows []models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("id IN ?", ids).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	byID := make(map[string]gormstore.CommitRow, len(rows))
+	byID := make(map[string]models.Commit, len(rows))
 	for _, r := range rows {
 		byID[r.ID] = r
 	}
-	out := make([]gormstore.CommitRow, 0, len(ids))
+	out := make([]models.Commit, 0, len(ids))
 	for _, id := range ids {
 		if r, ok := byID[id]; ok {
 			out = append(out, r)
@@ -649,7 +652,7 @@ func (m *gitManager) resolveRef(ctx context.Context, ref string) (string, error)
 		return branch.HeadCommitID, nil
 	}
 	// Try as a commit row ID directly.
-	var row gormstore.CommitRow
+	var row models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("id = ?", ref).First(&row).Error; err == nil {
 		return ref, nil
@@ -665,7 +668,7 @@ func (m *gitManager) resolveRef(ctx context.Context, ref string) (string, error)
 // ── Domain converters ─────────────────────────────────────────────────────────
 
 // commitToEntry converts a Commit row to a [CommitEntry] for Log output.
-func commitToEntry(r gormstore.CommitRow) CommitEntry {
+func commitToEntry(r models.Commit) CommitEntry {
 	ts, _ := time.Parse(time.RFC3339, r.CommittedAt)
 	if ts.IsZero() {
 		ts, _ = time.Parse(time.RFC3339, r.AuthorAt)

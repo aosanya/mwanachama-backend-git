@@ -13,7 +13,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -49,7 +48,7 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 	}
 
 	now := models.NowRFC3339()
-	row := gormstore.MergeRequestToRow(models.MergeRequest{
+	row := models.MergeRequest{
 		Title:            req.Title,
 		Description:      req.Description,
 		SourceBranchID:   source.ID,
@@ -61,13 +60,14 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 		WorkflowRunID:    req.WorkflowRunID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
-	})
-	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+	}
+	row.RepositoryID = repo.ID
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).Create(&row).Error; err != nil {
 		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: create: %w", err)
 	}
 
-	mr := gormstore.MergeRequestFromRow(row)
+	mr := row
 	m.publish(ctx, TopicMergeRequested, MergeRequestRequestedPayload{
 		MergeRequestID: mr.ID,
 		RepoID:         repo.ID,
@@ -81,7 +81,7 @@ func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequ
 
 // GetMergeRequest retrieves a MergeRequest by ID.
 func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error) {
-	var row gormstore.MergeRequestRow
+	var row models.MergeRequest
 	err := m.db.WithContext(ctx).Table(m.tables.MergeRequests).
 		Where("id = ? AND NOT deleted", mrID).First(&row).Error
 	if err != nil {
@@ -90,7 +90,7 @@ func (m *gitManager) GetMergeRequest(ctx context.Context, mrID string) (models.M
 		}
 		return models.MergeRequest{}, fmt.Errorf("GetMergeRequest: %w", err)
 	}
-	return gormstore.MergeRequestFromRow(row), nil
+	return row, nil
 }
 
 // ListMergeRequests returns MRs matching the filter. An empty filter returns
@@ -112,13 +112,13 @@ func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestF
 	if limit <= 0 || limit > maxListPage {
 		limit = maxListPage
 	}
-	var rows []gormstore.MergeRequestRow
+	var rows []models.MergeRequest
 	if err := q.Limit(limit).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListMergeRequests: %w", err)
 	}
 	out := make([]models.MergeRequest, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.MergeRequestFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }

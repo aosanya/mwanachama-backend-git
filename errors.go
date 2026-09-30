@@ -122,5 +122,5 @@ var ErrWorkflowRunIDRequired = errors.New("workflow_run_id is required")
 // ErrEntityNotFound is returned by [GitManager.GetNeighborhood] when
 // entityID does not resolve to any row across the eight node tables. Replaces
 // entitygraph.ErrEntityNotFound, which no longer exists once storage moved
-// off entitygraph — see [gormstore.ResolveNodeType].
+// off entitygraph — see [ResolveNodeType].
 var ErrEntityNotFound = errors.New("entity not found")

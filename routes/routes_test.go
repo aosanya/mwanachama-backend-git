@@ -1,6 +1,7 @@
 package routes_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -16,11 +17,14 @@ func newTestManager(t *testing.T) mwanachamagit.GitManager {
 	if err != nil {
 		t.Fatalf("gorm.Open: %v", err)
 	}
-	tables := mwanachamagit.DefaultTableNames("test")
-	if err := mwanachamagit.Migrate(db, tables); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	s, err := mwanachamagit.LoadSpec(filepath.Join("..", "spec", "examples", "engineering.git.json"))
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
 	}
-	gm, err := mwanachamagit.NewGitManager(db, tables, nil, nil, nil)
+	if err := mwanachamagit.Provision(db, s); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	gm, err := mwanachamagit.NewGitManager(db, s, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewGitManager: %v", err)
 	}

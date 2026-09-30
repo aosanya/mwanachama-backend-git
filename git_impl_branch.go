@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -48,7 +47,7 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 	}
 
 	now := models.NowRFC3339()
-	row := gormstore.BranchToRow(models.Branch{
+	row := models.Branch{
 		Name:          req.Name,
 		IsDefault:     false,
 		HeadCommitID:  sourceBranch.HeadCommitID,
@@ -56,18 +55,19 @@ func (m *gitManager) CreateBranch(ctx context.Context, req CreateBranchRequest) 
 		WorkflowRunID: req.WorkflowRunID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-	})
-	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+	}
+	row.RepositoryID = repo.ID
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&row).Error; err != nil {
 		return models.Branch{}, fmt.Errorf("CreateBranch: create: %w", err)
 	}
-	return gormstore.BranchFromRow(row), nil
+	return row, nil
 }
 
 // GetBranch retrieves a Branch row by its ID.
 // Returns [ErrBranchNotFound] if no branch with that ID exists.
 func (m *gitManager) GetBranch(ctx context.Context, branchID string) (models.Branch, error) {
-	var row gormstore.BranchRow
+	var row models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("id = ? AND NOT deleted", branchID).First(&row).Error
 	if err != nil {
@@ -76,7 +76,7 @@ func (m *gitManager) GetBranch(ctx context.Context, branchID string) (models.Bra
 		}
 		return models.Branch{}, fmt.Errorf("GetBranch: %w", err)
 	}
-	return gormstore.BranchFromRow(row), nil
+	return row, nil
 }
 
 // ListBranches returns all Branch rows for the specified repository.
@@ -91,7 +91,7 @@ func (m *gitManager) ListBranches(ctx context.Context, repoID string) ([]models.
 	}
 	out := make([]models.Branch, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.BranchFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }
@@ -100,7 +100,7 @@ func (m *gitManager) ListBranches(ctx context.Context, repoID string) ([]models.
 // Returns [ErrBranchNotFound] if no branch with that name exists for the
 // specified repository.
 func (m *gitManager) GetBranchByName(ctx context.Context, repoID string, branchName string) (models.Branch, error) {
-	var row gormstore.BranchRow
+	var row models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("repository_id = ? AND name = ? AND NOT deleted", repoID, branchName).First(&row).Error
 	if err != nil {
@@ -109,7 +109,7 @@ func (m *gitManager) GetBranchByName(ctx context.Context, repoID string, branchN
 		}
 		return models.Branch{}, fmt.Errorf("GetBranchByName: %w", err)
 	}
-	return gormstore.BranchFromRow(row), nil
+	return row, nil
 }
 
 // DeleteBranch removes a Branch row.
@@ -230,14 +230,14 @@ func (m *gitManager) ListBranchesFiltered(ctx context.Context, repoID string, fi
 // repositories whose workflow_run_id column matches runID. Used by the
 // closure aggregator path where no repository is specified.
 func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID string) ([]models.Branch, error) {
-	var rows []gormstore.BranchRow
+	var rows []models.Branch
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("workflow_run_id = ? AND NOT deleted", runID).Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]models.Branch, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.BranchFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }
@@ -246,8 +246,8 @@ func (m *gitManager) listBranchesByWorkflowRunID(ctx context.Context, runID stri
 
 // listBranchesByRepo returns all Branch rows linked to the given
 // repositoryID.
-func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]gormstore.BranchRow, error) {
-	var rows []gormstore.BranchRow
+func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string) ([]models.Branch, error) {
+	var rows []models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("repository_id = ? AND NOT deleted", repositoryID).Limit(maxListPage).Find(&rows).Error
 	return rows, err
@@ -256,7 +256,7 @@ func (m *gitManager) listBranchesByRepo(ctx context.Context, repositoryID string
 // defaultBranch returns the Branch row whose is_default column is true for
 // the given repository.
 func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (models.Branch, error) {
-	var row gormstore.BranchRow
+	var row models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("repository_id = ? AND is_default AND NOT deleted", repositoryID).First(&row).Error
 	if err != nil {
@@ -265,7 +265,7 @@ func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (mo
 		}
 		return models.Branch{}, err
 	}
-	return gormstore.BranchFromRow(row), nil
+	return row, nil
 }
 
 // advanceBranchHead updates a branch's head_commit_id and sha columns to
@@ -280,7 +280,7 @@ func (m *gitManager) defaultBranch(ctx context.Context, repositoryID string) (mo
 // in). Returns [ErrMergeConcurrencyConflict] if the row didn't match.
 // Pass "" to skip the check (used by IndexPushedBranch).
 func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitID, expectedHeadCommitID string) (models.Branch, error) {
-	var commitRow gormstore.CommitRow
+	var commitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("id = ?", newCommitID).First(&commitRow).Error; err != nil {
 		return models.Branch{}, fmt.Errorf("advanceBranchHead: get commit: %w", err)

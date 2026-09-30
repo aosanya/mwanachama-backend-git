@@ -18,7 +18,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -56,11 +55,11 @@ func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest
 
 	siblingsQ := m.db.WithContext(ctx).Table(m.tables.Keywords).Where("NOT deleted")
 	if req.ParentID == "" {
-		siblingsQ = siblingsQ.Where("parent_id IS NULL")
+		siblingsQ = siblingsQ.Where("parent_id = ?", "")
 	} else {
 		siblingsQ = siblingsQ.Where("parent_id = ?", req.ParentID)
 	}
-	var siblings []gormstore.KeywordRow
+	var siblings []models.Keyword
 	if err := siblingsQ.Find(&siblings).Error; err != nil {
 		return models.Keyword{}, fmt.Errorf("CreateKeyword: list siblings: %w", err)
 	}
@@ -71,25 +70,26 @@ func (m *gitManager) CreateKeyword(ctx context.Context, req CreateKeywordRequest
 	}
 
 	now := models.NowRFC3339()
-	row := gormstore.KeywordToRow(models.Keyword{
+	row := models.Keyword{
+		ID:          newID(),
 		Name:        req.Name,
 		Description: req.Description,
 		Scope:       req.Scope,
 		ParentID:    req.ParentID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	})
+	}
 	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).Create(&row).Error; err != nil {
 		return models.Keyword{}, fmt.Errorf("CreateKeyword: create: %w", err)
 	}
-	return gormstore.KeywordFromRow(row), nil
+	return row, nil
 }
 
 // GetKeyword retrieves a Keyword row by its ID, including its direct
 // children's IDs.
 // Returns [ErrKeywordNotFound] if no keyword with that ID exists.
 func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (models.Keyword, error) {
-	var row gormstore.KeywordRow
+	var row models.Keyword
 	err := m.db.WithContext(ctx).Table(m.tables.Keywords).
 		Where("id = ? AND NOT deleted", keywordID).First(&row).Error
 	if err != nil {
@@ -98,8 +98,8 @@ func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (models.K
 		}
 		return models.Keyword{}, fmt.Errorf("GetKeyword %s: %w", keywordID, err)
 	}
-	kw := gormstore.KeywordFromRow(row)
-	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
+	kw := row
+	childIDs, err := KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
 	if err != nil {
 		return models.Keyword{}, fmt.Errorf("GetKeyword %s: list children: %w", keywordID, err)
 	}
@@ -113,7 +113,7 @@ func (m *gitManager) GetKeyword(ctx context.Context, keywordID string) (models.K
 func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]models.Keyword, error) {
 	q := m.db.WithContext(ctx).Table(m.tables.Keywords).Where("NOT deleted")
 	if filter.ParentID == "" {
-		q = q.Where("parent_id IS NULL")
+		q = q.Where("parent_id = ?", "")
 	} else {
 		q = q.Where("parent_id = ?", filter.ParentID)
 	}
@@ -125,13 +125,13 @@ func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]
 		limit = maxListPage
 	}
 	q = q.Limit(limit)
-	var rows []gormstore.KeywordRow
+	var rows []models.Keyword
 	if err := q.Order("id").Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListKeywords: %w", err)
 	}
 	out := make([]models.Keyword, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.KeywordFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }
@@ -139,7 +139,7 @@ func (m *gitManager) ListKeywords(ctx context.Context, filter KeywordFilter) ([]
 // GetKeywordTree returns the full taxonomy subtree rooted at the given
 // keywordID, or the full forest of root keywords when keywordID is empty.
 func (m *gitManager) GetKeywordTree(ctx context.Context, keywordID string) ([]KeywordTreeNode, error) {
-	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
+	childIDs, err := KeywordChildIDs(m.db.WithContext(ctx), m.tables, keywordID)
 	if err != nil {
 		return nil, fmt.Errorf("GetKeywordTree: %w", err)
 	}
@@ -147,12 +147,12 @@ func (m *gitManager) GetKeywordTree(ctx context.Context, keywordID string) ([]Ke
 	if len(childIDs) == 0 {
 		return nodes, nil
 	}
-	var rows []gormstore.KeywordRow
+	var rows []models.Keyword
 	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
 		Where("id IN ? AND NOT deleted", childIDs).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("GetKeywordTree: %w", err)
 	}
-	byID := make(map[string]gormstore.KeywordRow, len(rows))
+	byID := make(map[string]models.Keyword, len(rows))
 	for _, r := range rows {
 		byID[r.ID] = r
 	}
@@ -204,12 +204,12 @@ func (m *gitManager) DeleteKeyword(ctx context.Context, keywordID string) error 
 
 	if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
 		Where("parent_id = ?", keywordID).
-		Update("parent_id", gormstore.StringToNullable(kw.ParentID)).Error; err != nil {
+		Update("parent_id", kw.ParentID).Error; err != nil {
 		return fmt.Errorf("DeleteKeyword %s: reparent children: %w", keywordID, err)
 	}
 
 	if err := m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
-		Where("keyword_id = ?", keywordID).Delete(&gormstore.BlobKeywordTagRow{}).Error; err != nil {
+		Where("keyword_id = ?", keywordID).Delete(&models.BlobKeywordTag{}).Error; err != nil {
 		return fmt.Errorf("DeleteKeyword %s: remove tagged_with rows: %w", keywordID, err)
 	}
 
@@ -221,9 +221,9 @@ func (m *gitManager) DeleteKeyword(ctx context.Context, keywordID string) error 
 }
 
 // buildKeywordTreeNode recursively builds a [KeywordTreeNode] for row.
-func (m *gitManager) buildKeywordTreeNode(ctx context.Context, row gormstore.KeywordRow) (KeywordTreeNode, error) {
-	kw := gormstore.KeywordFromRow(row)
-	childIDs, err := gormstore.KeywordChildIDs(m.db.WithContext(ctx), m.tables, row.ID)
+func (m *gitManager) buildKeywordTreeNode(ctx context.Context, row models.Keyword) (KeywordTreeNode, error) {
+	kw := row
+	childIDs, err := KeywordChildIDs(m.db.WithContext(ctx), m.tables, row.ID)
 	if err != nil {
 		return KeywordTreeNode{}, err
 	}
@@ -231,12 +231,12 @@ func (m *gitManager) buildKeywordTreeNode(ctx context.Context, row gormstore.Key
 
 	childNodes := make([]KeywordTreeNode, 0, len(childIDs))
 	if len(childIDs) > 0 {
-		var childRows []gormstore.KeywordRow
+		var childRows []models.Keyword
 		if err := m.db.WithContext(ctx).Table(m.tables.Keywords).
 			Where("id IN ? AND NOT deleted", childIDs).Find(&childRows).Error; err != nil {
 			return KeywordTreeNode{}, err
 		}
-		byID := make(map[string]gormstore.KeywordRow, len(childRows))
+		byID := make(map[string]models.Keyword, len(childRows))
 		for _, r := range childRows {
 			byID[r.ID] = r
 		}
@@ -275,7 +275,7 @@ func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) erro
 
 	now := models.NowRFC3339()
 	if req.RelationshipName == "tagged_with" {
-		row := gormstore.BlobKeywordTagRow{
+		row := models.BlobKeywordTag{
 			BranchID:  req.BranchID,
 			BlobID:    req.FromEntityID,
 			KeywordID: req.ToEntityID,
@@ -290,7 +290,7 @@ func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) erro
 		return nil
 	}
 
-	row := gormstore.BlobReferenceRow{
+	row := models.BlobReference{
 		BranchID:   req.BranchID,
 		FromBlobID: req.FromEntityID,
 		Name:       req.RelationshipName,
@@ -324,12 +324,12 @@ func (m *gitManager) DeleteEdge(ctx context.Context, req DeleteEdgeRequest) erro
 	if req.RelationshipName == "tagged_with" {
 		result = m.db.WithContext(ctx).Table(m.tables.BlobKeywordTags).
 			Where("branch_id = ? AND blob_id = ? AND keyword_id = ?", req.BranchID, req.FromEntityID, req.ToEntityID).
-			Delete(&gormstore.BlobKeywordTagRow{})
+			Delete(&models.BlobKeywordTag{})
 	} else {
 		result = m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 			Where("branch_id = ? AND from_blob_id = ? AND name = ? AND to_blob_id = ?",
 				req.BranchID, req.FromEntityID, req.RelationshipName, req.ToEntityID).
-			Delete(&gormstore.BlobReferenceRow{})
+			Delete(&models.BlobReference{})
 	}
 	if result.Error != nil {
 		return fmt.Errorf("DeleteEdge %s (%s→%s): %w", req.RelationshipName, req.FromEntityID, req.ToEntityID, result.Error)

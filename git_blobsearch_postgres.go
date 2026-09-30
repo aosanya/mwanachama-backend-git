@@ -1,16 +1,3 @@
-// git_blobsearch_postgres.go implements [BlobSearcher] against Postgres full-
-// text search (tsvector/ts_rank), replacing CodeValdGit's ArangoSearch/BM25
-// view (GIT task G7).
-//
-// Blob content now lives on real columns of the blobs table (see
-// gormstore.BlobRow) rather than a JSONB properties blob — the only change
-// from the entitygraph era, since this file never depended on
-// entitygraph.DataManager in the first place (it always queried Postgres
-// directly). Search matches against
-// to_tsvector('english', name || ' ' || content), computed at query time. A
-// GIN index over that same expression ([gormstore.Migrate]'s
-// syncBlobSearchIndex) keeps this fast without needing a generated column or
-// a sync job to keep one up to date.
 package mwanachamagit
 
 import (
@@ -19,26 +6,22 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-shared/spec"
 )
 
-// PostgresBlobSearcher is the Postgres-backed [BlobSearcher].
 type PostgresBlobSearcher struct {
 	db    *gorm.DB
 	table string // e.g. "git_blobs"
 }
 
-// NewPostgresBlobSearcher constructs a [PostgresBlobSearcher] reading the
-// blobs table named by t.Blobs. Run [gormstore.Migrate] against db (which
-// creates the backing GIN index) before using it.
-func NewPostgresBlobSearcher(db *gorm.DB, t gormstore.TableNames) *PostgresBlobSearcher {
-	return &PostgresBlobSearcher{db: db, table: t.Blobs}
+func NewPostgresBlobSearcher(db *gorm.DB, s *spec.Spec) (*PostgresBlobSearcher, error) {
+	o, ok := s.ByRole(roleBlob)
+	if !ok {
+		return nil, fmt.Errorf("NewPostgresBlobSearcher: the spec fills no %q role", roleBlob)
+	}
+	return &PostgresBlobSearcher{db: db, table: s.TableFor(o)}, nil
 }
 
-// Search implements [BlobSearcher]. It matches query (via plainto_tsquery,
-// so callers pass plain search terms rather than tsquery syntax) against
-// each Blob's name and content, and returns results ordered by descending
-// relevance.
 func (s *PostgresBlobSearcher) Search(ctx context.Context, query string, limit int) ([]BlobSearchResult, error) {
 	if limit <= 0 {
 		limit = 20
@@ -58,7 +41,7 @@ WHERE NOT deleted
   AND %[2]s @@ plainto_tsquery('english', ?)
 ORDER BY score DESC
 LIMIT ?
-`, s.table, gormstore.BlobFTSExpr)
+`, s.table, BlobFTSExpr)
 
 	var results []BlobSearchResult
 	if err := s.db.WithContext(ctx).Raw(q, query, query, query, limit).Scan(&results).Error; err != nil {

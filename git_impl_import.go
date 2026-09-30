@@ -37,7 +37,6 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -145,19 +144,20 @@ func (m *gitManager) ImportRepo(ctx context.Context, req ImportRepoRequest) (mod
 	if req.DefaultBranch == "" {
 		req.DefaultBranch = "main"
 	}
-	jobRow := gormstore.ImportJobToRow(models.ImportJob{
+	jobRow := models.ImportJob{
 		Name:          req.Name,
 		SourceURL:     req.SourceURL,
 		DefaultBranch: req.DefaultBranch,
 		Status:        importStatusPending,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-	})
+	}
+	ensureID(&jobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Create(&jobRow).Error; err != nil {
 		return models.ImportJob{}, fmt.Errorf("ImportRepo: create job row: %w", err)
 	}
 	jobID := jobRow.ID
-	job := gormstore.ImportJobFromRow(jobRow)
+	job := jobRow
 
 	jobCtx, cancel := context.WithCancel(context.Background())
 	entry := &importCancelEntry{cancel: cancel}
@@ -173,7 +173,7 @@ func (m *gitManager) ImportRepo(ctx context.Context, req ImportRepoRequest) (mod
 // GetImportStatus returns the current state of an import job.
 // Returns [ErrImportJobNotFound] if no job with the given ID exists.
 func (m *gitManager) GetImportStatus(ctx context.Context, jobID string) (models.ImportJob, error) {
-	var row gormstore.ImportJobRow
+	var row models.ImportJob
 	err := m.db.WithContext(ctx).Table(m.tables.ImportJobs).Where("id = ?", jobID).First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -181,7 +181,7 @@ func (m *gitManager) GetImportStatus(ctx context.Context, jobID string) (models.
 		}
 		return models.ImportJob{}, fmt.Errorf("GetImportStatus %s: %w", jobID, err)
 	}
-	job := gormstore.ImportJobFromRow(row)
+	job := row
 	importJobsMu.Lock()
 	entry, ok := importJobs[jobID]
 	importJobsMu.Unlock()
@@ -269,15 +269,16 @@ func (m *gitManager) runImport(ctx context.Context, jobID string, req ImportRepo
 	appendImportStep(jobID, "Clone complete. Discovering branches…")
 
 	now := models.NowRFC3339()
-	repoRow := gormstore.RepositoryToRow(models.Repository{
+	repoRow := models.Repository{
 		Name:          req.Name,
 		Description:   req.Description,
 		DefaultBranch: defaultBranch,
 		SourceURL:     req.SourceURL,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-	})
+	}
 	repoRow.BareClonePath = cloneDir
+	ensureID(&repoRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&repoRow).Error; err != nil {
 		m.failImportJob(ctx, jobID, fmt.Sprintf("create Repository row: %v", err))
 		return
@@ -342,7 +343,7 @@ func (m *gitManager) runImport(ctx context.Context, jobID string, req ImportRepo
 
 	// Automatically fetch the default branch so it is immediately usable.
 	appendImportStep(jobID, fmt.Sprintf("Auto-fetching default branch %q…", defaultBranch))
-	var defaultBranchRow gormstore.BranchRow
+	var defaultBranchRow models.Branch
 	err = m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("name = ? AND NOT deleted", defaultBranch).First(&defaultBranchRow).Error
 	if err == nil {
@@ -366,7 +367,7 @@ func (m *gitManager) runImport(ctx context.Context, jobID string, req ImportRepo
 // upsertStubBranchNamed creates (or updates) a Branch row with status="stub"
 // for the given branch name and tip SHA.
 func (m *gitManager) upsertStubBranchNamed(ctx context.Context, branchName, tipSHA, repoID, sourceURL, now string) error {
-	var existing gormstore.BranchRow
+	var existing models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("name = ? AND NOT deleted", branchName).First(&existing).Error
 	switch {
@@ -382,15 +383,16 @@ func (m *gitManager) upsertStubBranchNamed(ctx context.Context, branchName, tipS
 			return fmt.Errorf("stub branch %s: update: %w", branchName, err)
 		}
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		row := gormstore.BranchToRow(models.Branch{
+		row := models.Branch{
 			Name:      branchName,
 			SHA:       tipSHA,
 			CreatedAt: now,
 			UpdatedAt: now,
-		})
-		row.RepositoryID = gormstore.StringToNullable(repoID)
+		}
+		row.RepositoryID = repoID
 		row.Status = branchStatusStub
 		row.SourceURL = sourceURL
+		ensureID(&row)
 		if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&row).Error; err != nil {
 			return fmt.Errorf("stub branch %s: create: %w", branchName, err)
 		}

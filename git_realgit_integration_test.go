@@ -33,7 +33,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ func newGitServer(t *testing.T) (*gitManager, string) {
 	srv := httptest.NewServer(m.SmartHTTPHandler())
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() {
-		var rows []gormstore.RepositoryRow
+		var rows []models.Repository
 		if err := m.db.Table(m.tables.Repositories).Find(&rows).Error; err != nil {
 			return
 		}
@@ -548,7 +548,7 @@ func TestRealGit_MergePushLinksBothParents(t *testing.T) {
 	mustGit(t, wc, "push", "origin", "main")
 
 	ctx := context.Background()
-	var mergeRow gormstore.CommitRow
+	var mergeRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("sha = ?", mergeSHA).First(&mergeRow).Error; err != nil {
 		t.Fatalf("merge commit was not indexed: %v", err)

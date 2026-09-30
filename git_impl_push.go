@@ -32,7 +32,6 @@ import (
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 	gogitobject "github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -73,7 +72,7 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 		return nil
 	}
 
-	var repoRow gormstore.RepositoryRow
+	var repoRow models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("name = ? AND NOT deleted", repoName).First(&repoRow).Error; err != nil {
 		return fmt.Errorf("IndexPushedBranch %s/%s: find repository: %w", repoName, branchRef, err)
@@ -107,11 +106,11 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 		return fmt.Errorf("IndexPushedBranch %s/%s: upsert tree: %w", repoName, branchRef, err)
 	}
 
-	var headCommitRow gormstore.CommitRow
+	var headCommitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("sha = ?", newSHA).First(&headCommitRow).Error; err != nil {
 		return fmt.Errorf("IndexPushedBranch %s/%s: find head commit row for %s: %w", repoName, branchRef, shortSHA(newSHA), err)
 	}
-	if rootTreeID != "" && headCommitRow.TreeID == nil {
+	if rootTreeID != "" && headCommitRow.TreeID == "" {
 		if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("id = ?", headCommitRow.ID).
 			Update("tree_id", rootTreeID).Error; err != nil {
 			log.Printf("[push-index] repo=%q ref=%q: WARNING set commit.tree_id: %v", repoName, branchRef, err)
@@ -144,7 +143,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 	now := models.NowRFC3339()
 
 	visited := map[string]bool{}
-	var rows []gormstore.CommitRow
+	var rows []models.Commit
 	parentSHAs := map[string][]string{}
 	queue := []gogitplumbing.Hash{tip}
 	for len(queue) > 0 {
@@ -170,7 +169,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 		if err != nil {
 			return 0, fmt.Errorf("read commit %s: %w", shortSHA(sha), err)
 		}
-		rows = append(rows, gormstore.CommitToRow(models.Commit{
+		rows = append(rows, models.Commit{
 			SHA:            sha,
 			Message:        c.Message,
 			AuthorName:     c.Author.Name,
@@ -180,7 +179,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 			CommitterEmail: c.Committer.Email,
 			CommittedAt:    c.Committer.When.UTC().Format(time.RFC3339),
 			CreatedAt:      now,
-		}))
+		})
 		shas := make([]string, 0, len(c.ParentHashes))
 		for _, p := range c.ParentHashes {
 			shas = append(shas, p.String())
@@ -193,6 +192,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 	if len(rows) == 0 {
 		return 0, nil
 	}
+	ensureID(&rows)
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).CreateInBatches(&rows, 200).Error; err != nil {
 		return 0, err
 	}
@@ -204,7 +204,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 
 // linkCommitParents writes the git_commit_parents rows for a batch of
 // just-inserted commits. Without them a pushed branch's history is
-// unreachable: [gormstore.CommitChainIDs]' recursive CTE — the only way Log
+// unreachable: [CommitChainIDs]' recursive CTE — the only way Log
 // walks backwards from a branch tip — follows this table and nothing else,
 // so an unlinked tip reports a one-commit history no matter how many
 // commits the push actually carried.
@@ -214,7 +214,7 @@ func (m *gitManager) walkNewCommits(ctx context.Context, repo *gogit.Repository,
 // previous tip, or anything an earlier push or fetch brought in). ParentIndex
 // keeps git's own parent order even if a link is skipped, so a merge parent
 // can never be mistaken for a first parent.
-func (m *gitManager) linkCommitParents(ctx context.Context, rows []gormstore.CommitRow, parentSHAs map[string][]string) error {
+func (m *gitManager) linkCommitParents(ctx context.Context, rows []models.Commit, parentSHAs map[string][]string) error {
 	idBySHA := make(map[string]string, len(rows))
 	for _, r := range rows {
 		idBySHA[r.SHA] = r.ID
@@ -229,7 +229,7 @@ func (m *gitManager) linkCommitParents(ctx context.Context, rows []gormstore.Com
 		}
 	}
 	if len(lookup) > 0 {
-		var existing []gormstore.CommitRow
+		var existing []models.Commit
 		if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 			Select("id", "sha").Where("sha IN ?", lookup).Find(&existing).Error; err != nil {
 			return fmt.Errorf("resolve parent commit rows: %w", err)
@@ -239,7 +239,7 @@ func (m *gitManager) linkCommitParents(ctx context.Context, rows []gormstore.Com
 		}
 	}
 
-	var links []gormstore.CommitParentRow
+	var links []models.CommitParent
 	for _, r := range rows {
 		for i, sha := range parentSHAs[r.SHA] {
 			parentID, ok := idBySHA[sha]
@@ -247,7 +247,7 @@ func (m *gitManager) linkCommitParents(ctx context.Context, rows []gormstore.Com
 				log.Printf("[push-index] commit=%s: parent %s has no Commit row — history link skipped", shortSHA(r.SHA), shortSHA(sha))
 				continue
 			}
-			links = append(links, gormstore.CommitParentRow{CommitID: r.ID, ParentID: parentID, ParentIndex: i})
+			links = append(links, models.CommitParent{CommitID: r.ID, ParentID: parentID, ParentIndex: i})
 		}
 	}
 	if len(links) == 0 {
@@ -281,7 +281,8 @@ func (m *gitManager) upsertTreeIdempotent(ctx context.Context, repo *gogit.Repos
 		return existingID, nil
 	}
 
-	treeRow := gormstore.TreeToRow(models.Tree{SHA: treeSHA, Path: pathPrefix, CreatedAt: now})
+	treeRow := models.Tree{SHA: treeSHA, Path: pathPrefix, CreatedAt: now}
+	ensureID(&treeRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
 		return "", fmt.Errorf("create tree %s path=%q: %w", shortSHA(treeSHA), pathPrefix, err)
 	}
@@ -302,7 +303,7 @@ func (m *gitManager) upsertTreeIdempotent(ctx context.Context, repo *gogit.Repos
 			}
 			if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
 				Clauses(clause.OnConflict{DoNothing: true}).
-				Create(&gormstore.TreeBlobRow{TreeID: treeID, BlobID: blobID}).Error; err != nil {
+				Create(&models.TreeBlob{TreeID: treeID, BlobID: blobID}).Error; err != nil {
 				log.Printf("[push-index] link tree_blobs path=%q: %v (non-fatal)", entryPath, err)
 			}
 			continue
@@ -318,7 +319,7 @@ func (m *gitManager) upsertTreeIdempotent(ctx context.Context, repo *gogit.Repos
 		}
 		if err := m.db.WithContext(ctx).Table(m.tables.TreeSubtrees).
 			Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&gormstore.TreeSubtreeRow{TreeID: treeID, SubtreeID: subTreeID}).Error; err != nil {
+			Create(&models.TreeSubtree{TreeID: treeID, SubtreeID: subTreeID}).Error; err != nil {
 			log.Printf("[push-index] link tree_subtrees path=%q: %v (non-fatal)", entryPath, err)
 		}
 	}
@@ -340,9 +341,10 @@ func (m *gitManager) upsertBlobIdempotent(ctx context.Context, repo *gogit.Repos
 		blobSize = blobObj.Size
 	}
 	ext := strings.TrimPrefix(filepath.Ext(entry.Name), ".")
-	row := gormstore.BlobToRow(models.Blob{
+	row := models.Blob{
 		SHA: blobSHA, Path: fullPath, Name: filepath.Base(fullPath), Extension: ext, Size: blobSize, CreatedAt: now,
-	})
+	}
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&row).Error; err != nil {
 		return "", fmt.Errorf("create blob %s path=%q: %w", shortSHA(blobSHA), fullPath, err)
 	}
@@ -372,7 +374,7 @@ func (m *gitManager) findRowIDBySHAAndPath(ctx context.Context, table, sha, path
 // through CreateBranch first) if none exists yet.
 func (m *gitManager) findOrCreatePushedBranch(ctx context.Context, repoID, repoName, branchRef, now string) (string, error) {
 	branchName := strings.TrimPrefix(branchRef, branchRefPrefix)
-	var row gormstore.BranchRow
+	var row models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("repository_id = ? AND name = ? AND NOT deleted", repoID, branchName).First(&row).Error
 	if err == nil {
@@ -382,8 +384,9 @@ func (m *gitManager) findOrCreatePushedBranch(ctx context.Context, repoID, repoN
 		return "", fmt.Errorf("find branch %q: %w", branchName, err)
 	}
 
-	branchRow := gormstore.BranchToRow(models.Branch{Name: branchName, CreatedAt: now, UpdatedAt: now})
-	branchRow.RepositoryID = gormstore.StringToNullable(repoID)
+	branchRow := models.Branch{Name: branchName, CreatedAt: now, UpdatedAt: now}
+	branchRow.RepositoryID = repoID
+	ensureID(&branchRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		return "", fmt.Errorf("create branch %q: %w", branchName, err)
 	}
@@ -406,7 +409,7 @@ func pushClonesRoot() string {
 // neither does a repo git_smarthttp.go's loader auto-creates on first
 // contact from a client that never called InitRepo at all.
 func (m *gitManager) openOrInitBareRepo(ctx context.Context, repoName string) (*gogit.Repository, error) {
-	var repoRow gormstore.RepositoryRow
+	var repoRow models.Repository
 	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("name = ? AND NOT deleted", repoName).First(&repoRow).Error
 	switch {

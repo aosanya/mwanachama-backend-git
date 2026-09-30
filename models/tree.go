@@ -9,7 +9,7 @@ type Tree struct {
 	Size       int64    `json:"-"`
 	CreatedAt  string   `json:"created_at"`
 	Deleted    bool     `json:"-"`
-	CommitID   string   `json:"commit_id,omitempty" spec:"-"`
-	BlobIDs    []string `json:"blob_ids,omitempty" spec:"-"`
-	SubtreeIDs []string `json:"subtree_ids,omitempty" spec:"-"`
+	CommitID   string   `json:"commit_id,omitempty" spec:"-" gorm:"-"`
+	BlobIDs    []string `json:"blob_ids,omitempty" spec:"-" gorm:"-"`
+	SubtreeIDs []string `json:"subtree_ids,omitempty" spec:"-" gorm:"-"`
 }

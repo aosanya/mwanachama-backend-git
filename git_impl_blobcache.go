@@ -28,7 +28,6 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	gogitplumbing "github.com/go-git/go-git/v5/plumbing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -42,7 +41,7 @@ func (m *gitManager) loadBlobContentFromBareClone(ctx context.Context, branch mo
 		return "", "", fmt.Errorf("blob %s has no SHA", blob.ID)
 	}
 
-	var repoRow gormstore.RepositoryRow
+	var repoRow models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("id = ?", branch.RepositoryID).First(&repoRow).Error; err != nil {
 		return "", "", fmt.Errorf("get repository %s: %w", branch.RepositoryID, err)

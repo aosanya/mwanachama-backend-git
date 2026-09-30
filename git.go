@@ -19,6 +19,7 @@ import (
 
 	"github.com/aosanya/mwanachama-backend-git/models"
 	"github.com/aosanya/mwanachama-backend-shared/events"
+	"github.com/aosanya/mwanachama-backend-shared/spec"
 )
 
 // Repository, Branch, MergeRequest, Tag, Keyword, ImportJob and
@@ -425,10 +426,11 @@ func (l *mutexLocker) WithMergeLock(ctx context.Context, fn func() error) error 
 // until a real BlobSearcher is injected.
 type gitManager struct {
 	db        *gorm.DB
-	tables    TableNames
-	publisher events.Publisher // optional; nil = skip event publishing
-	locker    RefLocker        // serialises default-branch mutations
-	searcher  BlobSearcher     // optional; nil = SearchBlobs returns empty
+	store     *store
+	tables    tableSet
+	publisher events.Publisher
+	locker    RefLocker
+	searcher  BlobSearcher
 }
 
 // NewGitManager constructs a [GitManager] reading and writing the fifteen
@@ -441,7 +443,7 @@ type gitManager struct {
 // Returns an error if db is nil.
 func NewGitManager(
 	db *gorm.DB,
-	t TableNames,
+	s *spec.Spec,
 	pub events.Publisher,
 	locker RefLocker,
 	searcher BlobSearcher,
@@ -449,12 +451,17 @@ func NewGitManager(
 	if db == nil {
 		return nil, fmt.Errorf("NewGitManager: db must not be nil")
 	}
+	st, err := newStore(db, s)
+	if err != nil {
+		return nil, fmt.Errorf("NewGitManager: %w", err)
+	}
 	if locker == nil {
 		locker = &mutexLocker{}
 	}
 	return &gitManager{
 		db:        db,
-		tables:    t,
+		store:     st,
+		tables:    tablesOf(st),
 		publisher: pub,
 		locker:    locker,
 		searcher:  searcher,

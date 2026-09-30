@@ -2,7 +2,7 @@
 //
 //   - [GitManager.GetNeighborhood] — bounded subgraph traversal (depth 1-3,
 //     100-node hard cap) over the closed catalogue of relationship
-//     shapes the flattened schema can express (see gormstore.NeighborhoodEdges).
+//     shapes the flattened schema can express (see NeighborhoodEdges).
 //
 //   - [GitManager.SearchByKeywords] — keyword-driven Blob discovery with
 //     optional taxonomy cascade and AND/OR match modes.
@@ -25,7 +25,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
+	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
 const queryGraphDefaultLimit = 50
@@ -77,7 +77,7 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 // vertex IDs in discovery order (startID first) and the deduplicated edge
 // set touching them.
 //
-// One [gormstore.NeighborhoodEdges] query covers the ENTIRE frontier per
+// One [NeighborhoodEdges] query covers the ENTIRE frontier per
 // level (not one query per frontier vertex), so every frontier member's own
 // edges are always collected regardless of whether the node cap fills up
 // mid-round — the cap only gates whether a newly-discovered neighbor is
@@ -90,7 +90,7 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 	frontier := []string{startID}
 
 	for level := 0; level < depth && len(frontier) > 0 && len(visited) < neighborhoodMaxNodes; level++ {
-		rawEdges, err := gormstore.NeighborhoodEdges(m.db.WithContext(ctx), m.tables, frontier)
+		rawEdges, err := NeighborhoodEdges(m.db.WithContext(ctx), m.tables, frontier)
 		if err != nil {
 			return nil, nil, fmt.Errorf("traverseNeighborhood: level %d: %w", level, err)
 		}
@@ -121,13 +121,13 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 // method attempts to find a Blob row whose Path matches entityID.
 // Returns [ErrEntityNotFound] if neither resolves.
 func (m *gitManager) resolveEntityID(ctx context.Context, entityID string) (string, error) {
-	if _, found, err := gormstore.ResolveNodeType(m.db.WithContext(ctx), m.tables, entityID); err != nil {
+	if _, found, err := ResolveNodeType(m.db.WithContext(ctx), m.tables, entityID); err != nil {
 		return "", err
 	} else if found {
 		return entityID, nil
 	}
 
-	var row gormstore.BlobRow
+	var row models.Blob
 	err := m.db.WithContext(ctx).Table(m.tables.Blobs).
 		Where("path = ? AND NOT deleted", entityID).First(&row).Error
 	if err != nil {
@@ -180,7 +180,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 	byID := make(map[string]GraphNode, len(ids))
 	db := m.db.WithContext(ctx)
 
-	var repos []gormstore.RepositoryRow
+	var repos []models.Repository
 	if err := db.Table(m.tables.Repositories).Where("id IN ? AND NOT deleted", ids).Find(&repos).Error; err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var branches []gormstore.BranchRow
+	var branches []models.Branch
 	if err := db.Table(m.tables.Branches).Where("id IN ? AND NOT deleted", ids).Find(&branches).Error; err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var mrs []gormstore.MergeRequestRow
+	var mrs []models.MergeRequest
 	if err := db.Table(m.tables.MergeRequests).Where("id IN ? AND NOT deleted", ids).Find(&mrs).Error; err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var tags []gormstore.TagRow
+	var tags []models.Tag
 	if err := db.Table(m.tables.Tags).Where("id IN ? AND NOT deleted", ids).Find(&tags).Error; err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var commits []gormstore.CommitRow
+	var commits []models.Commit
 	if err := db.Table(m.tables.Commits).Where("id IN ? AND NOT deleted", ids).Find(&commits).Error; err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var trees []gormstore.TreeRow
+	var trees []models.Tree
 	if err := db.Table(m.tables.Trees).Where("id IN ? AND NOT deleted", ids).Find(&trees).Error; err != nil {
 		return nil, err
 	}
@@ -244,7 +244,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		}}
 	}
 
-	var blobs []gormstore.BlobRow
+	var blobs []models.Blob
 	if err := db.Table(m.tables.Blobs).Where("id IN ? AND NOT deleted", ids).Find(&blobs).Error; err != nil {
 		return nil, err
 	}
@@ -252,7 +252,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 		byID[r.ID] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r)}
 	}
 
-	var keywords []gormstore.KeywordRow
+	var keywords []models.Keyword
 	if err := db.Table(m.tables.Keywords).Where("id IN ? AND NOT deleted", ids).Find(&keywords).Error; err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (m *gitManager) hydrateNodes(ctx context.Context, ids []string) ([]GraphNod
 
 // blobProps builds the property map for a Blob row, matching the
 // entitygraph-era JSONB key set.
-func blobProps(r gormstore.BlobRow) map[string]any {
+func blobProps(r models.Blob) map[string]any {
 	return map[string]any{
 		"sha": r.SHA, "path": r.Path, "name": r.Name, "extension": r.Extension,
 		"size": r.Size, "encoding": r.Encoding, "content": r.Content, "created_at": r.CreatedAt,
@@ -333,7 +333,7 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 		ids = append(ids, id)
 	}
 
-	var rows []gormstore.BlobRow
+	var rows []models.Blob
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).
 		Where("id IN ? AND NOT deleted", ids).Find(&rows).Error; err != nil {
 		return GraphResult{}, fmt.Errorf("SearchByKeywords: fetch blobs: %w", err)
@@ -353,12 +353,12 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 
 // taggedBlobsForKeyword returns the set of blob IDs tagged with kwID (and, if
 // cascade, any of its descendants). The cascade expansion is a recursive CTE
-// ([gormstore.KeywordDescendantIDs]) replacing the old collectDescendants
+// ([KeywordDescendantIDs]) replacing the old collectDescendants
 // Go-side recursive walk.
 func (m *gitManager) taggedBlobsForKeyword(ctx context.Context, kwID string, cascade bool) (map[string]bool, error) {
 	kwIDs := []string{kwID}
 	if cascade {
-		descendants, err := gormstore.KeywordDescendantIDs(m.db.WithContext(ctx), m.tables, kwID)
+		descendants, err := KeywordDescendantIDs(m.db.WithContext(ctx), m.tables, kwID)
 		if err != nil {
 			return nil, err
 		}
@@ -383,7 +383,7 @@ func (m *gitManager) edgesBetweenBlobs(ctx context.Context, ids map[string]bool)
 	for id := range ids {
 		idList = append(idList, id)
 	}
-	var rows []gormstore.BlobReferenceRow
+	var rows []models.BlobReference
 	if err := m.db.WithContext(ctx).Table(m.tables.BlobReferences).
 		Where("from_blob_id IN ? AND to_blob_id IN ?", idList, idList).Find(&rows).Error; err != nil {
 		return nil, err
@@ -441,7 +441,7 @@ func intersectSets(sets []map[string]bool) map[string]bool {
 // blobWithLayer is the destination shape for QueryGraph's aggregate query —
 // a Blob row plus its computed max signal layer.
 type blobWithLayer struct {
-	gormstore.BlobRow
+	models.Blob
 	MaxLayer int
 }
 
@@ -464,7 +464,7 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 		limit = queryGraphDefaultLimit
 	}
 
-	q := m.db.WithContext(ctx).Table(m.tables.Blobs+" AS b").
+	q := m.db.WithContext(ctx).Table(m.tables.Blobs + " AS b").
 		Select(`b.*, COALESCE(MAX(CASE t.signal ` +
 			`WHEN 'surface' THEN 1 WHEN 'index' THEN 2 WHEN 'structural' THEN 3 ` +
 			`WHEN 'contributor' THEN 4 WHEN 'authority' THEN 5 ELSE 0 END), 0) AS max_layer`).
@@ -506,7 +506,7 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 	nodes := make([]GraphNode, len(results))
 	for i, r := range results {
 		nodeIDs[r.ID] = true
-		nodes[i] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r.BlobRow)}
+		nodes[i] = GraphNode{ID: r.ID, TypeID: "Blob", Properties: blobProps(r.Blob)}
 	}
 
 	edges, err := m.queryGraphEdges(ctx, nodeIDs, req.Relationships)
@@ -533,7 +533,7 @@ func (m *gitManager) queryGraphEdges(ctx context.Context, nodeIDs map[string]boo
 	if len(rel) > 0 {
 		q = q.Where("(name IN ? OR descriptor IN ?)", rel, rel)
 	}
-	var rows []gormstore.BlobReferenceRow
+	var rows []models.BlobReference
 	if err := q.Find(&rows).Error; err != nil {
 		return nil, err
 	}

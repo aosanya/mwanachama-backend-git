@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -28,10 +27,11 @@ func TestNewGitManagerSatisfiesInterface(t *testing.T) {
 // createCommit is a test-only stand-in for WriteFile: it creates a bare
 // Commit row linked to repoID so branch/merge flows have something real to
 // advance HEAD to.
-func createCommit(t *testing.T, m *gitManager, repoID, sha string) gormstore.CommitRow {
+func createCommit(t *testing.T, m *gitManager, repoID, sha string) models.Commit {
 	t.Helper()
-	row := gormstore.CommitToRow(models.Commit{SHA: sha, Message: "test commit " + sha, CreatedAt: models.NowRFC3339()})
-	row.RepositoryID = gormstore.StringToNullable(repoID)
+	row := models.Commit{SHA: sha, Message: "test commit " + sha, CreatedAt: models.NowRFC3339()}
+	row.RepositoryID = repoID
+	ensureID(&row)
 	if err := m.db.WithContext(context.Background()).Table(m.tables.Commits).Create(&row).Error; err != nil {
 		t.Fatalf("createCommit: %v", err)
 	}
@@ -277,7 +277,8 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateKeyword: %v", err)
 	}
-	blobRow := gormstore.BlobToRow(models.Blob{Path: "auth.go", Name: "auth.go", CreatedAt: models.NowRFC3339()})
+	blobRow := models.Blob{Path: "auth.go", Name: "auth.go", CreatedAt: models.NowRFC3339()}
+	ensureID(&blobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
 		t.Fatalf("create blob: %v", err)
 	}

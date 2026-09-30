@@ -12,5 +12,5 @@ type Blob struct {
 	Data      string `json:"-"`
 	CreatedAt string `json:"created_at"`
 	Deleted   bool   `json:"-"`
-	TreeID    string `json:"tree_id,omitempty" spec:"-"`
+	TreeID    string `json:"tree_id,omitempty" spec:"-" gorm:"-"`
 }

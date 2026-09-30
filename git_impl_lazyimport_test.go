@@ -22,7 +22,6 @@ import (
 	gogitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -35,41 +34,46 @@ func TestReadFile_LazyLoad_NoLocalClone(t *testing.T) {
 	m := newTestManager(t)
 	now := models.NowRFC3339()
 
-	repoRow := gormstore.RepositoryToRow(models.Repository{
+	repoRow := models.Repository{
 		Name: "lazy-repo", DefaultBranch: "main", SourceURL: "file:///nonexistent",
 		CreatedAt: now, UpdatedAt: now,
-	})
+	}
 	repoRow.BareClonePath = "/this/path/does/not/exist/on/disk"
+	ensureID(&repoRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&repoRow).Error; err != nil {
 		t.Fatalf("create Repository: %v", err)
 	}
 
-	branchRow := gormstore.BranchToRow(models.Branch{Name: "main", IsDefault: true, CreatedAt: now, UpdatedAt: now})
-	branchRow.RepositoryID = gormstore.StringToNullable(repoRow.ID)
+	branchRow := models.Branch{Name: "main", IsDefault: true, CreatedAt: now, UpdatedAt: now}
+	branchRow.RepositoryID = repoRow.ID
 	branchRow.Status = "fetched"
+	ensureID(&branchRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		t.Fatalf("create Branch: %v", err)
 	}
 
-	blobRow := gormstore.BlobToRow(models.Blob{
+	blobRow := models.Blob{
 		SHA: "dddddddddddddddddddddddddddddddddddddddd", Path: "file.txt", Name: "file.txt",
 		Extension: "txt", Size: 10, Encoding: "utf-8", Content: "", CreatedAt: now,
-	})
+	}
+	ensureID(&blobRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
 		t.Fatalf("create Blob: %v", err)
 	}
 
-	treeRow := gormstore.TreeToRow(models.Tree{SHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Path: "", CreatedAt: now})
+	treeRow := models.Tree{SHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Path: "", CreatedAt: now}
+	ensureID(&treeRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Trees).Create(&treeRow).Error; err != nil {
 		t.Fatalf("create Tree: %v", err)
 	}
 	if err := m.db.WithContext(ctx).Table(m.tables.TreeBlobs).
-		Create(&gormstore.TreeBlobRow{TreeID: treeRow.ID, BlobID: blobRow.ID}).Error; err != nil {
+		Create(&models.TreeBlob{TreeID: treeRow.ID, BlobID: blobRow.ID}).Error; err != nil {
 		t.Fatalf("link tree_blobs: %v", err)
 	}
 
-	commitRow := gormstore.CommitToRow(models.Commit{SHA: "ffffffffffffffffffffffffffffffffffffffff", Message: "stub commit", CreatedAt: now})
-	commitRow.TreeID = gormstore.StringToNullable(treeRow.ID)
+	commitRow := models.Commit{SHA: "ffffffffffffffffffffffffffffffffffffffff", Message: "stub commit", CreatedAt: now}
+	commitRow.TreeID = treeRow.ID
+	ensureID(&commitRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Create(&commitRow).Error; err != nil {
 		t.Fatalf("create Commit: %v", err)
 	}
@@ -196,7 +200,7 @@ poll:
 		t.Errorf("expected TopicRepoImported published, got %v", pub.published())
 	}
 
-	var branches []gormstore.BranchRow
+	var branches []models.Branch
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Find(&branches).Error; err != nil || len(branches) == 0 {
 		t.Fatalf("no Branch rows found after import (err=%v)", err)
 	}
@@ -204,7 +208,7 @@ poll:
 	// The default branch's auto-fetch was triggered synchronously by
 	// runImport; poll until it clears "fetching"/"stub" (background
 	// goroutine) so we can assert the README is actually readable.
-	var repos []gormstore.RepositoryRow
+	var repos []models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Find(&repos).Error; err != nil || len(repos) != 1 {
 		t.Fatalf("expected exactly one Repository, got %d (err=%v)", len(repos), err)
 	}
@@ -227,7 +231,7 @@ fetchPoll:
 					continue
 				}
 				mainBranch = b
-				var branchRow gormstore.BranchRow
+				var branchRow models.Branch
 				if err := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", b.ID).First(&branchRow).Error; err != nil {
 					continue
 				}

@@ -11,7 +11,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -36,43 +35,45 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 	}
 	now := models.NowRFC3339()
 
-	row := gormstore.RepositoryToRow(models.Repository{
+	row := models.Repository{
 		Name:          req.Name,
 		Description:   req.Description,
 		DefaultBranch: defaultBranch,
 		CreatedAt:     now,
 		UpdatedAt:     now,
-	})
+	}
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Create(&row).Error; err != nil {
 		return models.Repository{}, fmt.Errorf("InitRepo: create repository: %w", err)
 	}
 
-	branchRow := gormstore.BranchToRow(models.Branch{
+	branchRow := models.Branch{
 		Name:      defaultBranch,
 		IsDefault: true,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
-	branchRow.RepositoryID = gormstore.StringToNullable(row.ID)
+	}
+	branchRow.RepositoryID = row.ID
+	ensureID(&branchRow)
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).Create(&branchRow).Error; err != nil {
 		return models.Repository{}, fmt.Errorf("InitRepo: create default branch: %w", err)
 	}
 
-	repo := gormstore.RepositoryFromRow(row)
+	repo := row
 	m.publish(ctx, TopicRepoCreated, RepoCreatedPayload{RepoID: repo.ID, Name: req.Name})
 	return repo, nil
 }
 
 // ListRepositories returns all Repository rows.
 func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository, error) {
-	var rows []gormstore.RepositoryRow
+	var rows []models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("NOT deleted").Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListRepositories: %w", err)
 	}
 	out := make([]models.Repository, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.RepositoryFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }
@@ -80,7 +81,7 @@ func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository,
 // GetRepository retrieves a Repository row by its ID.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) GetRepository(ctx context.Context, repoID string) (models.Repository, error) {
-	var row gormstore.RepositoryRow
+	var row models.Repository
 	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("id = ? AND NOT deleted", repoID).First(&row).Error
 	if err != nil {
@@ -89,13 +90,13 @@ func (m *gitManager) GetRepository(ctx context.Context, repoID string) (models.R
 		}
 		return models.Repository{}, fmt.Errorf("GetRepository: %w", err)
 	}
-	return gormstore.RepositoryFromRow(row), nil
+	return row, nil
 }
 
 // GetRepositoryByName retrieves a Repository row by its human-readable name.
 // Returns [ErrRepoNotInitialised] if no repository with that name exists.
 func (m *gitManager) GetRepositoryByName(ctx context.Context, repoName string) (models.Repository, error) {
-	var row gormstore.RepositoryRow
+	var row models.Repository
 	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("name = ? AND NOT deleted", repoName).First(&row).Error
 	if err != nil {
@@ -104,7 +105,7 @@ func (m *gitManager) GetRepositoryByName(ctx context.Context, repoName string) (
 		}
 		return models.Repository{}, fmt.Errorf("GetRepositoryByName: %w", err)
 	}
-	return gormstore.RepositoryFromRow(row), nil
+	return row, nil
 }
 
 // DeleteRepo soft-deletes the specified repository row and all owned sub-rows.

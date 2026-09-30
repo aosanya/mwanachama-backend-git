@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -33,32 +32,34 @@ func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (model
 		return models.Tag{}, ErrTagAlreadyExists
 	}
 
-	var commitRow gormstore.CommitRow
+	var commitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).
 		Where("id = ?", req.CommitID).First(&commitRow).Error; err != nil {
 		return models.Tag{}, fmt.Errorf("CreateTag: commit %s: %w", req.CommitID, ErrBranchNotFound)
 	}
 
 	now := models.NowRFC3339()
-	row := gormstore.TagToRow(models.Tag{
+	row := models.Tag{
 		Name:       req.Name,
 		SHA:        commitRow.SHA,
 		Message:    req.Message,
 		TaggerName: req.TaggerName,
 		TaggerAt:   now,
 		CreatedAt:  now,
-	}, commitRow.ID)
-	row.RepositoryID = gormstore.StringToNullable(repo.ID)
+		CommitID:   commitRow.ID,
+	}
+	row.RepositoryID = repo.ID
+	ensureID(&row)
 	if err := m.db.WithContext(ctx).Table(m.tables.Tags).Create(&row).Error; err != nil {
 		return models.Tag{}, fmt.Errorf("CreateTag: create: %w", err)
 	}
-	return gormstore.TagFromRow(row), nil
+	return row, nil
 }
 
 // GetTag retrieves a Tag row by its ID.
 // Returns [ErrTagNotFound] if no tag with that ID exists.
 func (m *gitManager) GetTag(ctx context.Context, tagID string) (models.Tag, error) {
-	var row gormstore.TagRow
+	var row models.Tag
 	err := m.db.WithContext(ctx).Table(m.tables.Tags).
 		Where("id = ? AND NOT deleted", tagID).First(&row).Error
 	if err != nil {
@@ -67,7 +68,7 @@ func (m *gitManager) GetTag(ctx context.Context, tagID string) (models.Tag, erro
 		}
 		return models.Tag{}, fmt.Errorf("GetTag: %w", err)
 	}
-	return gormstore.TagFromRow(row), nil
+	return row, nil
 }
 
 // ListTags returns all Tag rows for the specified repository.
@@ -76,14 +77,14 @@ func (m *gitManager) ListTags(ctx context.Context, repoID string) ([]models.Tag,
 	if _, err := m.GetRepository(ctx, repoID); err != nil {
 		return nil, fmt.Errorf("ListTags: %w", err)
 	}
-	var rows []gormstore.TagRow
+	var rows []models.Tag
 	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
 		Where("repository_id = ? AND NOT deleted", repoID).Limit(maxListPage).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("ListTags: %w", err)
 	}
 	out := make([]models.Tag, len(rows))
 	for i, r := range rows {
-		out[i] = gormstore.TagFromRow(r)
+		out[i] = r
 	}
 	return out, nil
 }

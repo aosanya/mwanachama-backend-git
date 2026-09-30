@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/aosanya/mwanachama-backend-git/gormstore"
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
@@ -98,7 +97,7 @@ func (m *gitManager) rollbackMergeRequestsForRun(ctx context.Context, workflowRu
 // the repo. The skipped counter is surfaced so callers can log and
 // investigate the (always unexpected) condition.
 func (m *gitManager) deleteBranchesForRun(ctx context.Context, workflowRunID string) (deleted, skippedDefault int, err error) {
-	var rows []gormstore.BranchRow
+	var rows []models.Branch
 	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("workflow_run_id = ? AND NOT deleted", workflowRunID).Find(&rows).Error; err != nil {
 		return 0, 0, fmt.Errorf("list branches: %w", err)
