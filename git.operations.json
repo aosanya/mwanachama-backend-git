@@ -1,0 +1,895 @@
+{
+  "operations": {
+    "init_repo": {
+      "method": "POST",
+      "path": "/repos",
+      "call": "InitRepo",
+      "action": "git.repository.init",
+      "status": 201,
+      "title": "Create repository",
+      "description": "Create an empty repository with a default branch. The name must not already be taken.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_repository": {
+      "method": "GET",
+      "path": "/repos/{repoID}",
+      "call": "GetRepository",
+      "action": "git.repository.read",
+      "title": "Read repository",
+      "description": "Read one repository by its storage key.",
+      "args": [
+        {
+          "from": "path",
+          "as": "repoID",
+          "description": "The repository to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_repo": {
+      "method": "DELETE",
+      "path": "/repos/{repoID}",
+      "call": "DeleteRepo",
+      "action": "git.repository.delete",
+      "status": 204,
+      "title": "Delete repository",
+      "description": "Remove a repository from view. Its history is left in place; use purge to reclaim the storage.",
+      "args": [
+        {
+          "from": "path",
+          "as": "repoID",
+          "description": "The repository to remove."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "purge_repo": {
+      "method": "POST",
+      "path": "/repos/{repoID}/purge",
+      "call": "PurgeRepo",
+      "action": "git.repository.purge",
+      "status": 204,
+      "title": "Purge repository",
+      "description": "Delete a repository and every commit, tree, blob, branch and tag reachable only from it. Not reversible.",
+      "args": [
+        {
+          "from": "path",
+          "as": "repoID",
+          "description": "The repository to purge."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "create_branch": {
+      "method": "POST",
+      "path": "/repos/{repoID}/branches",
+      "call": "CreateBranch",
+      "action": "git.branch.create",
+      "status": 201,
+      "title": "Create branch",
+      "description": "Start a new branch in a repository, pointing at the tip it is cut from.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "repoID",
+          "into": "RepositoryID",
+          "description": "The repository the branch belongs to. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_branch": {
+      "method": "GET",
+      "path": "/branches/{branchID}",
+      "call": "GetBranch",
+      "action": "git.branch.read",
+      "title": "Read branch",
+      "description": "Read one branch by its storage key.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_branch": {
+      "method": "DELETE",
+      "path": "/branches/{branchID}",
+      "call": "DeleteBranch",
+      "action": "git.branch.delete",
+      "status": 204,
+      "title": "Delete branch",
+      "description": "Remove a branch. A repository's default branch may not be deleted.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch to remove."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "create_tag": {
+      "method": "POST",
+      "path": "/repos/{repoID}/tags",
+      "call": "CreateTag",
+      "action": "git.tag.create",
+      "status": 201,
+      "title": "Create tag",
+      "description": "Freeze a name against a commit. Once created, what a tag points at never changes.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "repoID",
+          "into": "RepositoryID",
+          "description": "The repository the tag belongs to. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "list_tags": {
+      "method": "GET",
+      "path": "/repos/{repoID}/tags",
+      "call": "ListTags",
+      "action": "git.tag.list",
+      "title": "List tags",
+      "description": "Every tag in one repository.",
+      "args": [
+        {
+          "from": "path",
+          "as": "repoID",
+          "description": "The repository whose tags to list."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_tag": {
+      "method": "GET",
+      "path": "/tags/{tagID}",
+      "call": "GetTag",
+      "action": "git.tag.read",
+      "title": "Read tag",
+      "description": "Read one tag by its storage key.",
+      "args": [
+        {
+          "from": "path",
+          "as": "tagID",
+          "description": "The tag to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_tag": {
+      "method": "DELETE",
+      "path": "/tags/{tagID}",
+      "call": "DeleteTag",
+      "action": "git.tag.delete",
+      "status": 204,
+      "title": "Delete tag",
+      "description": "Remove a tag. The commit it pointed at is untouched.",
+      "args": [
+        {
+          "from": "path",
+          "as": "tagID",
+          "description": "The tag to remove."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "create_merge_request": {
+      "method": "POST",
+      "path": "/merge-requests",
+      "call": "CreateMergeRequest",
+      "action": "git.merge_request.create",
+      "status": 201,
+      "title": "Open merge request",
+      "description": "Ask for one branch's work to be merged into another. The target falls back to the repository's default branch.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "list_merge_requests": {
+      "method": "GET",
+      "path": "/merge-requests",
+      "call": "ListMergeRequests",
+      "action": "git.merge_request.list",
+      "title": "List merge requests",
+      "description": "The merge requests matching the filter. Narrow by repository, by state, or by the orchestrated run that opened them.",
+      "args": [
+        {
+          "from": "query",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_merge_request": {
+      "method": "GET",
+      "path": "/merge-requests/{mrID}",
+      "call": "GetMergeRequest",
+      "action": "git.merge_request.read",
+      "title": "Read merge request",
+      "description": "Read one merge request by its storage key.",
+      "args": [
+        {
+          "from": "path",
+          "as": "mrID",
+          "description": "The merge request to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "complete_merge_request": {
+      "method": "POST",
+      "path": "/merge-requests/{mrID}/complete",
+      "call": "CompleteMergeRequest",
+      "action": "git.merge_request.complete",
+      "title": "Complete merge request",
+      "description": "Merge the request's source branch into its target and record the resulting tip. Only an open request can be completed.",
+      "args": [
+        {
+          "from": "path",
+          "as": "mrID",
+          "description": "The merge request to complete."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "close_merge_request": {
+      "method": "POST",
+      "path": "/merge-requests/{mrID}/close",
+      "call": "CloseMergeRequest",
+      "action": "git.merge_request.close",
+      "title": "Close merge request",
+      "description": "Close a request without merging it. Only an open request can be closed.",
+      "args": [
+        {
+          "from": "path",
+          "as": "mrID",
+          "description": "The merge request to close."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "rollback_workflow_run": {
+      "method": "POST",
+      "path": "/workflow-runs/{workflowRunID}/rollback",
+      "call": "RollbackByWorkflowRun",
+      "action": "git.workflow_run.rollback",
+      "title": "Roll back a run",
+      "description": "Undo every merge one orchestrated run produced, newest first, and report what was reverted and what was skipped.",
+      "args": [
+        {
+          "from": "path",
+          "as": "workflowRunID",
+          "description": "The run to undo."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "write_file": {
+      "method": "POST",
+      "path": "/branches/{branchID}/files",
+      "call": "WriteFile",
+      "action": "git.file.write",
+      "status": 201,
+      "title": "Write file",
+      "description": "Write a file on a branch and record the commit that carries it.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "branchID",
+          "into": "BranchID",
+          "description": "The branch to write on. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "read_file": {
+      "method": "GET",
+      "path": "/branches/{branchID}/files",
+      "call": "ReadFile",
+      "action": "git.file.read",
+      "title": "Read file",
+      "description": "Read one file's content as it stands on a branch.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch to read from."
+        },
+        {
+          "from": "query",
+          "as": "path",
+          "description": "The file path from the repository root.",
+          "required": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_file": {
+      "method": "DELETE",
+      "path": "/branches/{branchID}/files",
+      "call": "DeleteFile",
+      "action": "git.file.delete",
+      "title": "Delete file",
+      "description": "Remove a file on a branch and record the commit that removes it.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "branchID",
+          "into": "BranchID",
+          "description": "The branch to delete from. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "list_directory": {
+      "method": "GET",
+      "path": "/branches/{branchID}/directory",
+      "call": "ListDirectory",
+      "action": "git.directory.list",
+      "title": "List directory",
+      "description": "The files and directories directly inside one path on a branch.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch to list on."
+        },
+        {
+          "from": "query",
+          "as": "path",
+          "description": "The directory path. Empty lists the repository root."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "log": {
+      "method": "GET",
+      "path": "/branches/{branchID}/log",
+      "call": "Log",
+      "action": "git.commit.log",
+      "title": "Read history",
+      "description": "The commits reachable from a branch tip, newest first, optionally narrowed to one path.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch whose history to walk."
+        },
+        {
+          "from": "query",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "diff": {
+      "method": "GET",
+      "path": "/diff",
+      "call": "Diff",
+      "action": "git.commit.diff",
+      "title": "Diff two refs",
+      "description": "The per-file changes between two refs, as unified diff text.",
+      "args": [
+        {
+          "from": "query",
+          "as": "from",
+          "description": "The ref to compare from.",
+          "required": true
+        },
+        {
+          "from": "query",
+          "as": "to",
+          "description": "The ref to compare to.",
+          "required": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "import_repo": {
+      "method": "POST",
+      "path": "/imports",
+      "call": "ImportRepo",
+      "action": "git.import.start",
+      "status": 202,
+      "title": "Import repository",
+      "description": "Start cloning a public repository in the background. No credentials are accepted, so a private repository cannot be imported.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_import_status": {
+      "method": "GET",
+      "path": "/imports/{jobID}",
+      "call": "GetImportStatus",
+      "action": "git.import.read",
+      "title": "Read import status",
+      "description": "How far an import has got, and why it failed if it did.",
+      "args": [
+        {
+          "from": "path",
+          "as": "jobID",
+          "description": "The import job to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "cancel_import": {
+      "method": "POST",
+      "path": "/imports/{jobID}/cancel",
+      "call": "CancelImport",
+      "action": "git.import.cancel",
+      "status": 204,
+      "title": "Cancel import",
+      "description": "Stop an import that is still running. One that has already finished cannot be cancelled.",
+      "args": [
+        {
+          "from": "path",
+          "as": "jobID",
+          "description": "The import job to stop."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "create_keyword": {
+      "method": "POST",
+      "path": "/keywords",
+      "call": "CreateKeyword",
+      "action": "git.keyword.create",
+      "status": 201,
+      "title": "Create keyword",
+      "description": "Add a label to the taxonomy, optionally under a parent.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "list_keywords": {
+      "method": "GET",
+      "path": "/keywords",
+      "call": "ListKeywords",
+      "action": "git.keyword.list",
+      "title": "List keywords",
+      "description": "The keywords matching the filter. Naming no parent lists the roots.",
+      "args": [
+        {
+          "from": "query",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_keyword_tree": {
+      "method": "GET",
+      "path": "/keywords/tree",
+      "call": "GetKeywordTree",
+      "action": "git.keyword.tree",
+      "title": "Read keyword tree",
+      "description": "One keyword and every keyword beneath it, as a tree.",
+      "args": [
+        {
+          "from": "query",
+          "as": "root",
+          "description": "The keyword to start from. Empty starts at the roots."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_keyword": {
+      "method": "GET",
+      "path": "/keywords/{keywordID}",
+      "call": "GetKeyword",
+      "action": "git.keyword.read",
+      "title": "Read keyword",
+      "description": "Read one keyword and the ids of its direct children.",
+      "args": [
+        {
+          "from": "path",
+          "as": "keywordID",
+          "description": "The keyword to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "update_keyword": {
+      "method": "PUT",
+      "path": "/keywords/{keywordID}",
+      "call": "UpdateKeyword",
+      "action": "git.keyword.update",
+      "title": "Update keyword",
+      "description": "Change a keyword's name, description, scope or parent.",
+      "args": [
+        {
+          "from": "path",
+          "as": "keywordID",
+          "description": "The keyword to change."
+        },
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_keyword": {
+      "method": "DELETE",
+      "path": "/keywords/{keywordID}",
+      "call": "DeleteKeyword",
+      "action": "git.keyword.delete",
+      "status": 204,
+      "title": "Delete keyword",
+      "description": "Remove a keyword and every tagging that used it.",
+      "args": [
+        {
+          "from": "path",
+          "as": "keywordID",
+          "description": "The keyword to remove."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "create_edge": {
+      "method": "POST",
+      "path": "/edges",
+      "call": "CreateEdge",
+      "action": "git.edge.create",
+      "status": 201,
+      "title": "Create relationship",
+      "description": "Record a named relationship between two files on one branch. The name must be one the module declares.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "delete_edge": {
+      "method": "DELETE",
+      "path": "/edges",
+      "call": "DeleteEdge",
+      "action": "git.edge.delete",
+      "status": 204,
+      "title": "Delete relationship",
+      "description": "Remove a named relationship between two files on one branch.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_neighborhood": {
+      "method": "GET",
+      "path": "/branches/{branchID}/neighborhood/{entityID}",
+      "call": "GetNeighborhood",
+      "action": "git.graph.neighborhood",
+      "title": "Read neighbourhood",
+      "description": "Everything within a few hops of one node, in both directions.",
+      "args": [
+        {
+          "from": "path",
+          "as": "branchID",
+          "description": "The branch to explore from."
+        },
+        {
+          "from": "path",
+          "as": "entityID",
+          "description": "The node to start at, by id or by file path."
+        },
+        {
+          "from": "query",
+          "as": "depth",
+          "description": "How many hops to follow. Clamped to a safe maximum."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "search_by_keywords": {
+      "method": "POST",
+      "path": "/search/keywords",
+      "call": "SearchByKeywords",
+      "action": "git.graph.search_keywords",
+      "title": "Search by keyword",
+      "description": "The files carrying the given keywords, ranked by how deeply each covers them.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "query_graph": {
+      "method": "POST",
+      "path": "/graph/query",
+      "call": "QueryGraph",
+      "action": "git.graph.query",
+      "title": "Query the graph",
+      "description": "The files matching a filter over type, folder, keyword and signal, with the relationships between them.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "fetch_branch": {
+      "method": "POST",
+      "path": "/branches/{branchID}/fetch",
+      "call": "FetchBranch",
+      "action": "git.fetch.start",
+      "status": 202,
+      "title": "Fetch branch",
+      "description": "Start fetching one branch's history in the background, for a repository imported without it.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "branchID",
+          "into": "BranchID",
+          "description": "The branch to fetch. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "get_fetch_status": {
+      "method": "GET",
+      "path": "/fetch-jobs/{jobID}",
+      "call": "GetFetchBranchStatus",
+      "action": "git.fetch.read",
+      "title": "Read fetch status",
+      "description": "How far a branch fetch has got, and why it failed if it did.",
+      "args": [
+        {
+          "from": "path",
+          "as": "jobID",
+          "description": "The fetch job to read."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
+    "search_blobs": {
+      "method": "POST",
+      "path": "/search/blobs",
+      "call": "SearchBlobs",
+      "action": "git.blob.search",
+      "title": "Search file contents",
+      "description": "Full-text search over file names and contents, ranked by relevance.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    }
+  },
+  "errors": {
+    "ErrRepoAlreadyExists": 409,
+    "ErrBranchExists": 409,
+    "ErrTagAlreadyExists": 409,
+    "ErrKeywordAlreadyExists": 409,
+    "ErrImportInProgress": 409,
+    "ErrMergeRequestNotOpen": 409,
+    "ErrDefaultBranchDeleteForbidden": 409,
+    "ErrMergeConcurrencyConflict": 409,
+    "ErrImportJobNotCancellable": 409,
+    "ErrBranchAlreadyFetched": 409,
+    "ErrRepoNotInitialised": 404,
+    "ErrBranchNotFound": 404,
+    "ErrTagNotFound": 404,
+    "ErrMergeRequestNotFound": 404,
+    "ErrKeywordNotFound": 404,
+    "ErrImportJobNotFound": 404,
+    "ErrFileNotFound": 404,
+    "ErrRefNotFound": 404,
+    "ErrEdgeNotFound": 404,
+    "ErrEntityNotFound": 404,
+    "ErrWorkflowRunIDRequired": 400,
+    "ErrInvalidRelationship": 400,
+    "ErrBlobContentUnavailable": 400
+  }
+}

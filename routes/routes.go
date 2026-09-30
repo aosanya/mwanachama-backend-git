@@ -1,45 +1,48 @@
 package routes
 
 import (
-	"net/http"
+	"github.com/aosanya/mwanachama-backend-shared/dispatch"
+	"github.com/aosanya/mwanachama-backend-shared/httpwire"
 
 	mwanachamagit "github.com/aosanya/mwanachama-backend-git"
 )
 
-// Route is one address this package answers, relative to wherever the
-// mounting process prefixes it (e.g. "/v1/git"). Path uses net/http's
-// ServeMux pattern syntax ("{repoID}" etc., Go 1.22+), so the mounting
-// process only ever needs prefix+rt.Path, never its own copy of the path
-// text.
-type Route struct {
-	Method  string
-	Path    string
-	Handler http.HandlerFunc
+type Route = httpwire.Route
+
+type Mount = dispatch.Mount
+
+var Sentinels = mwanachamagit.Sentinels()
+
+var AnonymousActions = []string{}
+
+var Table = dispatch.NewTable(mwanachamagit.OperationsJSON(), Sentinels, AnonymousActions...)
+
+func Build(gm mwanachamagit.GitManager) ([]Route, error) { return BuildFor(gm, Mount{}) }
+
+func BuildFor(gm mwanachamagit.GitManager, m Mount) ([]Route, error) {
+	declared, err := Table.Build(gm, m)
+	if err != nil {
+		return nil, err
+	}
+	return append(declared, undeclared(gm)...), nil
 }
 
-// Pattern returns the http.ServeMux registration pattern for this route once
-// mounted under prefix.
-func (r Route) Pattern(prefix string) string {
-	return r.Method + " " + prefix + r.Path
+func Routes(gm mwanachamagit.GitManager) []Route { return RoutesFor(gm, Mount{}) }
+
+func RoutesFor(gm mwanachamagit.GitManager, m Mount) []Route {
+	return append(Table.Routes(gm, m), undeclared(gm)...)
 }
 
-// Routes is every address this package answers: every resource group's
-// routes concatenated. A mounting process that wants all of it in one loop
-// uses this; one that wants to gate different groups differently (the
-// gateway does, today — CapGitRead vs CapGitWrite) calls the per-group
-// functions below directly instead.
-func Routes(gm mwanachamagit.GitManager) []Route {
-	var out []Route
-	out = append(out, RepositoryRoutes(gm)...)
-	out = append(out, BranchRoutes(gm)...)
-	out = append(out, TagRoutes(gm)...)
-	out = append(out, MergeRequestRoutes(gm)...)
-	out = append(out, FileRoutes(gm)...)
-	out = append(out, ImportRoutes(gm)...)
-	out = append(out, KeywordRoutes(gm)...)
-	out = append(out, EdgeRoutes(gm)...)
-	out = append(out, GraphRoutes(gm)...)
-	out = append(out, FetchBranchRoutes(gm)...)
-	out = append(out, BlobSearchRoutes(gm)...)
-	return out
+func Split(gm mwanachamagit.GitManager, m Mount) dispatch.Split {
+	s := Table.Split(gm, m)
+	s.Gated = append(s.Gated, undeclared(gm)...)
+	return s
+}
+
+func PublicRoutes(gm mwanachamagit.GitManager) []Route {
+	return Table.Split(gm, Mount{}).Anonymous
+}
+
+func OperatorRoutes(gm mwanachamagit.GitManager, m Mount) []Route {
+	return Split(gm, m).Gated
 }

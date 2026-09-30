@@ -2,6 +2,7 @@ package routes_test
 
 import (
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -39,20 +40,76 @@ func patterns(rts []routes.Route, prefix string) []string {
 	return out
 }
 
-func TestRoutes_TotalCount(t *testing.T) {
+// The forty-three addresses this package answered before the route table was
+// declared. The conversion is only correct if the set is identical, so it is
+// written out rather than counted.
+var addresses = []string{
+	"DELETE /branches/{branchID}",
+	"DELETE /branches/{branchID}/files",
+	"DELETE /edges",
+	"DELETE /keywords/{keywordID}",
+	"DELETE /repos/{repoID}",
+	"DELETE /tags/{tagID}",
+	"GET /branches/{branchID}",
+	"GET /branches/{branchID}/directory",
+	"GET /branches/{branchID}/files",
+	"GET /branches/{branchID}/log",
+	"GET /branches/{branchID}/neighborhood/{entityID}",
+	"GET /diff",
+	"GET /fetch-jobs/{jobID}",
+	"GET /imports/{jobID}",
+	"GET /keywords",
+	"GET /keywords/tree",
+	"GET /keywords/{keywordID}",
+	"GET /merge-requests",
+	"GET /merge-requests/{mrID}",
+	"GET /repos",
+	"GET /repos/{repoID}",
+	"GET /repos/{repoID}/branches",
+	"GET /repos/{repoID}/tags",
+	"GET /tags/{tagID}",
+	"POST /branches/{branchID}/fetch",
+	"POST /branches/{branchID}/files",
+	"POST /branches/{branchID}/merge",
+	"POST /edges",
+	"POST /graph/query",
+	"POST /imports",
+	"POST /imports/{jobID}/cancel",
+	"POST /keywords",
+	"POST /merge-requests",
+	"POST /merge-requests/{mrID}/close",
+	"POST /merge-requests/{mrID}/complete",
+	"POST /repos",
+	"POST /repos/{repoID}/branches",
+	"POST /repos/{repoID}/purge",
+	"POST /repos/{repoID}/tags",
+	"POST /search/blobs",
+	"POST /search/keywords",
+	"POST /workflow-runs/{workflowRunID}/rollback",
+	"PUT /keywords/{keywordID}",
+}
+
+func TestTheDeclaredTableAnswersExactlyTheAddressesItAlwaysDid(t *testing.T) {
 	gm := newTestManager(t)
-	all := routes.Routes(gm)
-	// 5 repos + 5 branches + 4 tags + 6 merge-requests/rollback + 6 files/log/diff
-	// + 3 import + 6 keywords + 2 edges + 3 graph + 2 fetch-branch + 1 blob-search
-	want := 5 + 5 + 4 + 6 + 6 + 3 + 6 + 2 + 3 + 2 + 1
-	if len(all) != want {
-		t.Fatalf("got %d routes, want %d: %v", len(all), want, patterns(all, ""))
+	got := patterns(routes.Routes(gm), "")
+	sort.Strings(got)
+
+	want := append([]string(nil), addresses...)
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d addresses, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("address %d: got %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
-func TestRoutes_NoDuplicatePatterns(t *testing.T) {
+func TestNoDuplicatePatterns(t *testing.T) {
 	gm := newTestManager(t)
-	seen := make(map[string]bool)
+	seen := map[string]bool{}
 	for _, p := range patterns(routes.Routes(gm), "") {
 		if seen[p] {
 			t.Errorf("duplicate route pattern: %s", p)
@@ -61,68 +118,31 @@ func TestRoutes_NoDuplicatePatterns(t *testing.T) {
 	}
 }
 
-func TestRepositoryRoutes(t *testing.T) {
+func TestPatternTakesThePrefix(t *testing.T) {
 	gm := newTestManager(t)
-	rts := routes.RepositoryRoutes(gm)
-	assertPatterns(t, rts, []string{
-		"POST /repos",
-		"GET /repos",
-		"GET /repos/{repoID}",
-		"DELETE /repos/{repoID}",
-		"POST /repos/{repoID}/purge",
-	})
-}
-
-func TestBranchRoutes(t *testing.T) {
-	gm := newTestManager(t)
-	rts := routes.BranchRoutes(gm)
-	assertPatterns(t, rts, []string{
-		"POST /repos/{repoID}/branches",
-		"GET /repos/{repoID}/branches",
-		"GET /branches/{branchID}",
-		"DELETE /branches/{branchID}",
-		"POST /branches/{branchID}/merge",
-	})
-}
-
-func TestKeywordRoutes_TreeBeforeWildcard(t *testing.T) {
-	gm := newTestManager(t)
-	rts := routes.KeywordRoutes(gm)
-	// GetKeywordTree's static "/keywords/tree" must be registered before
-	// GetKeyword's "/keywords/{keywordID}" wildcard.
-	var treeIdx, wildcardIdx = -1, -1
-	for i, rt := range rts {
-		switch rt.Pattern("") {
-		case "GET /keywords/tree":
-			treeIdx = i
-		case "GET /keywords/{keywordID}":
-			wildcardIdx = i
+	for _, rt := range routes.Routes(gm) {
+		if rt.Pattern("/v1/git") != rt.Method+" /v1/git"+rt.Path {
+			t.Fatalf("prefix not applied to %s %s", rt.Method, rt.Path)
 		}
 	}
-	if treeIdx == -1 || wildcardIdx == -1 {
-		t.Fatalf("expected both routes present: %v", patterns(rts, ""))
+}
+
+func TestEverySentinelTheSpecNeverMapsIsReported(t *testing.T) {
+	unmapped, err := routes.Table.UnmappedSentinels()
+	if err != nil {
+		t.Fatalf("unmapped: %v", err)
 	}
-	if treeIdx > wildcardIdx {
-		t.Fatalf("expected /keywords/tree registered before /keywords/{keywordID}")
+	if len(unmapped) > 0 {
+		t.Errorf("these sentinels are supplied but mapped to no status, so each is redacted to a 500: %v", unmapped)
 	}
 }
 
-func TestRoute_PatternWithPrefix(t *testing.T) {
-	gm := newTestManager(t)
-	rts := routes.RepositoryRoutes(gm)
-	if got := rts[0].Pattern("/v1/git"); got != "POST /v1/git/repos" {
-		t.Fatalf("got %q", got)
+func TestEveryAnonymousActionIsARealAction(t *testing.T) {
+	unknown, err := routes.Table.UnknownAnonymousActions()
+	if err != nil {
+		t.Fatalf("unknown: %v", err)
 	}
-}
-
-func assertPatterns(t *testing.T, got []routes.Route, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("got %d routes, want %d: %v", len(got), len(want), patterns(got, ""))
-	}
-	for i, p := range patterns(got, "") {
-		if p != want[i] {
-			t.Fatalf("route %d: got %q, want %q", i, p, want[i])
-		}
+	if len(unknown) > 0 {
+		t.Errorf("AnonymousActions names actions no operation declares: %v", unknown)
 	}
 }

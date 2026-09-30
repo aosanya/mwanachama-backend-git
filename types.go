@@ -1,87 +1,58 @@
 package mwanachamagit
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
-// FileEntry is a single item returned by [GitManager.ListDirectory].
 type FileEntry struct {
-	// Name is the base name of the file or directory (no path prefix).
-	Name string
-
-	// Path is the full path from the repository root.
-	Path string
-
-	// IsDir is true when the entry is a directory (Git tree node).
-	IsDir bool
-
-	// Size is the byte size of the file. Zero for directories.
-	Size int64
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
+	Size  int64  `json:"size"`
 }
 
-// CommitEntry is a summary of a single Git commit returned by [GitManager.Log].
 type CommitEntry struct {
-	// SHA is the full 40-character hex commit hash.
-	SHA string
-
-	// Author is the name or ID of the person or agent who authored the commit.
-	Author string
-
-	// Message is the commit message as stored in Git.
-	Message string
-
-	// Timestamp is the author timestamp of the commit in UTC.
-	Timestamp time.Time
+	SHA       string    `json:"sha"`
+	Author    string    `json:"author"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
-// FileDiff describes the changes to one file between two refs, as returned
-// by [GitManager.Diff].
+func (c CommitEntry) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		SHA       string `json:"sha"`
+		Author    string `json:"author"`
+		Message   string `json:"message"`
+		Timestamp string `json:"timestamp"`
+	}
+	return json.Marshal(wire{
+		SHA:       c.SHA,
+		Author:    c.Author,
+		Message:   c.Message,
+		Timestamp: c.Timestamp.Format(time.RFC3339),
+	})
+}
+
 type FileDiff struct {
-	// Path is the file path relative to the repository root.
-	// For renames, this is the destination path.
-	Path string
-
-	// Operation describes the type of change: "add", "modify", or "delete".
-	Operation string
-
-	// Patch is the unified diff text for the file. Empty for binary files.
-	Patch string
+	Path      string `json:"path"`
+	Operation string `json:"operation"`
+	Patch     string `json:"patch,omitempty"`
 }
 
-// ErrMergeConflict is returned by [GitManager.MergeBranch] when the
-// auto-rebase encounters a content conflict that cannot be resolved
-// automatically. The task branch is left in a clean state (rebase aborted)
-// so the agent can resolve the conflicts and retry.
 type ErrMergeConflict struct {
-	// TaskID is the task branch suffix (the value passed to MergeBranch).
-	TaskID string
-
-	// ConflictingFiles lists the repository-relative paths of the files
-	// that produced conflicts during the rebase.
+	TaskID           string
 	ConflictingFiles []string
 }
 
-// Error implements the error interface.
 func (e *ErrMergeConflict) Error() string {
 	return fmt.Sprintf("merge conflict on task branch %q: conflicting files %v", e.TaskID, e.ConflictingFiles)
 }
 
-// ImportRepoRequest carries the parameters for an async repository import.
-// The caller provides a public HTTPS URL; credentials are not accepted in v1.
 type ImportRepoRequest struct {
-	// Name is the human-readable repository name stored on the Repository entity.
-	Name string
-
-	// Description is an optional description stored on the Repository entity.
-	Description string
-
-	// SourceURL is the public HTTPS URL of the remote Git repository to clone.
-	// Private repositories are not supported in v1 — no credentials are accepted.
-	// Example: "https://github.com/aosanya/CodeValdGit"
-	SourceURL string
-
-	// DefaultBranch is the name of the branch to mark as the repository default.
-	// If empty, defaults to "main".
-	DefaultBranch string
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	SourceURL     string `json:"source_url"`
+	DefaultBranch string `json:"default_branch,omitempty"`
 }
