@@ -1,16 +1,13 @@
 package models
 
-// Repository is a versioned codebase. Sub-resources (Branches, Tags,
-// Commits) are separate rows linked by their own RepositoryID foreign key.
 type Repository struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Description   string `json:"description,omitempty"`
 	DefaultBranch string `json:"default_branch"`
+	BareClonePath string `json:"-"`
+	SourceURL     string `json:"source_url,omitempty"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
-
-	// SourceURL is the remote Git URL the repository was imported from.
-	// Empty for repositories created locally via InitRepo.
-	SourceURL string `json:"source_url,omitempty"`
+	Deleted       bool   `json:"-"`
 }
