@@ -21,6 +21,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aosanya/mwanachama-backend-shared/postgres"
+	"path/filepath"
+
+	"github.com/aosanya/mwanachama-backend-shared/spec"
 )
 
 // uniqueRepoName returns a repository name namespaced to the running test,
@@ -38,7 +41,7 @@ func uniqueRepoName(t *testing.T, base string) string {
 // GORM's Postgres dialector, migrates a unique-enough table prefix, and
 // returns a ready-to-use *gitManager. Skips the calling test if POSTGRES_URL
 // is unset. Tables are dropped on cleanup.
-func newPostgresGitManager(t *testing.T, searcher BlobSearcher) (*gitManager, TableNames) {
+func newPostgresGitManager(t *testing.T, searcher BlobSearcher) (*gitManager, *spec.Spec) {
 	t.Helper()
 	dsn := os.Getenv("POSTGRES_URL")
 	if dsn == "" {
@@ -57,10 +60,18 @@ func newPostgresGitManager(t *testing.T, searcher BlobSearcher) (*gitManager, Ta
 		t.Fatalf("gorm.Open: %v", err)
 	}
 
-	tables := DefaultTableNames("gitit")
-	if err := Migrate(db, tables); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	s, err := LoadSpec(filepath.Join("spec", "examples", "engineering.git.json"))
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
 	}
+	if err := Provision(db, s); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	st, err := newStore(db, s)
+	if err != nil {
+		t.Fatalf("newStore: %v", err)
+	}
+	tables := tablesOf(st)
 	t.Cleanup(func() {
 		_ = db.Migrator().DropTable(
 			tables.BlobKeywordTags, tables.BlobReferences, tables.CommitParents,
@@ -70,8 +81,8 @@ func newPostgresGitManager(t *testing.T, searcher BlobSearcher) (*gitManager, Ta
 		)
 	})
 
-	m := &gitManager{db: db, tables: tables, locker: &mutexLocker{}, searcher: searcher}
-	return m, tables
+	m := &gitManager{db: db, store: st, tables: tables, locker: &mutexLocker{}, searcher: searcher}
+	return m, s
 }
 
 // TestPostgresGitManagerRoundTrip exercises InitRepo -> CreateBranch ->
@@ -146,12 +157,12 @@ func TestPostgresGitManagerRoundTrip(t *testing.T) {
 // Postgres full-text search: relevance ranking and the
 // no-match-returns-empty-not-nil contract.
 func TestPostgresBlobSearch(t *testing.T) {
-	m, tables := newPostgresGitManager(t, nil)
+	m, s := newPostgresGitManager(t, nil)
 	ctx := context.Background()
 
 	mustCreateBlob := func(path, name, content string) {
 		t.Helper()
-		if err := m.db.WithContext(ctx).Table(tables.Blobs).Create(map[string]any{
+		if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(map[string]any{
 			"id": mustUUID(), "path": path, "name": name, "content": content,
 			"created_at": "2026-01-01T00:00:00.000000000Z",
 		}).Error; err != nil {
@@ -163,7 +174,10 @@ func TestPostgresBlobSearch(t *testing.T) {
 	mustCreateBlob("auth/session.go", "session.go", "package auth\n\n// Session cookie handling, unrelated to tokens.")
 	mustCreateBlob("README.md", "README.md", "# widgets\n\nA widget factory with no authentication concerns.")
 
-	searcher := NewPostgresBlobSearcher(m.db, tables)
+	searcher, err := NewPostgresBlobSearcher(m.db, s)
+	if err != nil {
+		t.Fatalf("NewPostgresBlobSearcher: %v", err)
+	}
 
 	results, err := searcher.Search(ctx, "oauth token", 10)
 	if err != nil {
@@ -199,8 +213,12 @@ func TestPostgresBlobSearch(t *testing.T) {
 // TestPostgresBlobSearchViaGitManager exercises GitManager.SearchBlobs end to
 // end with a real PostgresBlobSearcher injected.
 func TestPostgresBlobSearchViaGitManager(t *testing.T) {
-	m, tables := newPostgresGitManager(t, nil)
-	m.searcher = NewPostgresBlobSearcher(m.db, tables)
+	m, s := newPostgresGitManager(t, nil)
+	ps, err := NewPostgresBlobSearcher(m.db, s)
+	if err != nil {
+		t.Fatalf("NewPostgresBlobSearcher: %v", err)
+	}
+	m.searcher = ps
 	ctx := context.Background()
 
 	repo, err := m.InitRepo(ctx, CreateRepoRequest{Name: uniqueRepoName(t, "widgets")})

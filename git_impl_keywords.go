@@ -21,19 +21,6 @@ import (
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-// validDocEdges is the set of allowed documentation relationship names.
-// "tagged_with" and "references" are the two branch-scoped types that follow
-// the DR-010 lifecycle (replicated on merge, deleted on branch delete).
-var validDocEdges = map[string]bool{
-	"tagged_with":   true,
-	"references":    true,
-	"referenced_by": true,
-	"documents":     true,
-	"documented_by": true,
-	"depends_on":    true,
-	"imported_by":   true,
-}
-
 // ── Keyword CRUD ──────────────────────────────────────────────────────────────
 
 // CreateKeyword creates a new Keyword row in the taxonomy.
@@ -263,7 +250,7 @@ func (m *gitManager) buildKeywordTreeNode(ctx context.Context, row models.Keywor
 // Returns [ErrBranchNotFound] if the branch does not exist.
 // Returns [ErrInvalidRelationship] if the relationship name is not valid.
 func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) error {
-	if !validDocEdges[req.RelationshipName] {
+	if err := m.checksField(roleBlobReference, "name", req.RelationshipName); err != nil {
 		return fmt.Errorf("CreateEdge: %w: %q", ErrInvalidRelationship, req.RelationshipName)
 	}
 	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
@@ -310,7 +297,7 @@ func (m *gitManager) CreateEdge(ctx context.Context, req CreateEdgeRequest) erro
 // Returns [ErrEdgeNotFound] if no matching edge exists.
 // Returns [ErrInvalidRelationship] if the relationship name is invalid.
 func (m *gitManager) DeleteEdge(ctx context.Context, req DeleteEdgeRequest) error {
-	if !validDocEdges[req.RelationshipName] {
+	if err := m.checksField(roleBlobReference, "name", req.RelationshipName); err != nil {
 		return fmt.Errorf("DeleteEdge: %w: %q", ErrInvalidRelationship, req.RelationshipName)
 	}
 	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
