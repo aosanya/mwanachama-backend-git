@@ -1,0 +1,360 @@
+{
+  "module": "git",
+  "domain": "engineering",
+  "instance": "eng",
+  "objects": [
+    {
+      "role": "repository",
+      "name": "repository",
+      "table": "repositories",
+      "description": "One codebase the engineering team versions.",
+      "indexes": [
+        {
+          "name": "name",
+          "description": "Finds a repository by the name a caller knows it as.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "branch",
+      "name": "branch",
+      "table": "branches",
+      "description": "A line of work off a codebase, merged back when it is done.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's branches.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "name",
+          "description": "Finds a branch by name within a repository.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "head",
+          "description": "Finds the branch whose tip is a given commit.",
+          "fields": [
+            "head_commit_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "run",
+          "description": "Finds every branch one orchestrated run produced, for rollback.",
+          "fields": [
+            "workflow_run_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "commit",
+      "name": "commit",
+      "table": "commits",
+      "description": "One recorded change to a codebase.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's commits.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "sha",
+          "description": "Finds a commit by hash, which is how every indexing path checks whether it already has one.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "tree",
+          "description": "Finds the commit that points at a given root tree.",
+          "fields": [
+            "tree_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "commit_parent",
+      "name": "commit_parent",
+      "table": "commit_parents",
+      "description": "What a change was built on top of.",
+      "indexes": [
+        {
+          "name": "parent",
+          "description": "Walks history backwards from a parent to its children.",
+          "fields": [
+            "parent_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "tree",
+      "name": "tree",
+      "table": "trees",
+      "description": "A directory listing at one recorded change.",
+      "indexes": [
+        {
+          "name": "sha",
+          "description": "Finds a tree by hash.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "tree_blob",
+      "name": "tree_file",
+      "table": "tree_files",
+      "description": "A source file directly inside a directory.",
+      "indexes": [
+        {
+          "name": "blob",
+          "description": "Finds every directory a file is reachable from.",
+          "fields": [
+            "blob_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "tree_subtree",
+      "name": "tree_subtree",
+      "table": "tree_subtrees",
+      "description": "A directory inside a directory.",
+      "indexes": [
+        {
+          "name": "subtree",
+          "description": "Finds every directory a subdirectory sits in.",
+          "fields": [
+            "subtree_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "blob",
+      "name": "file",
+      "table": "files",
+      "description": "One source file's contents.",
+      "indexes": [
+        {
+          "name": "sha",
+          "description": "Finds a file by content hash.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "path",
+          "description": "Finds a file by the path it sits at.",
+          "fields": [
+            "path"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "tag",
+      "name": "release",
+      "table": "releases",
+      "description": "A named, frozen point in a codebase's history.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's tags.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "commit",
+          "description": "Finds the tags pointing at a commit.",
+          "fields": [
+            "commit_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "name",
+          "description": "Finds a tag by name.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "merge_request",
+      "name": "merge_request",
+      "table": "merge_requests",
+      "description": "A request to land one line of work into another.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's merge requests.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "source",
+          "description": "Finds the request merging a given branch.",
+          "fields": [
+            "source_branch_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "target",
+          "description": "Lists the requests aimed at a given branch.",
+          "fields": [
+            "target_branch_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "status",
+          "description": "Lists the open requests without reading the closed ones.",
+          "fields": [
+            "status"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "run",
+          "description": "Finds every request one orchestrated run opened, for rollback.",
+          "fields": [
+            "workflow_run_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "keyword",
+      "name": "topic",
+      "table": "topics",
+      "description": "A label the team files source files under.",
+      "indexes": [
+        {
+          "name": "parent",
+          "description": "Lists a keyword's children.",
+          "fields": [
+            "parent_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "scope",
+          "description": "Lists the keywords in one grouping.",
+          "fields": [
+            "scope"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "blob_keyword_tag",
+      "name": "file_topic",
+      "table": "file_topics",
+      "description": "Records that a source file is about a topic.",
+      "indexes": [
+        {
+          "name": "blob",
+          "description": "Lists the keywords one file carries.",
+          "fields": [
+            "blob_id"
+          ]
+        },
+        {
+          "name": "keyword",
+          "description": "Finds every file carrying one keyword.",
+          "fields": [
+            "keyword_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "blob_reference",
+      "name": "file_link",
+      "table": "file_links",
+      "description": "A named relationship between two source files.",
+      "indexes": [
+        {
+          "name": "from",
+          "description": "Follows a file's outgoing relationships.",
+          "fields": [
+            "from_blob_id"
+          ]
+        },
+        {
+          "name": "to",
+          "description": "Follows a file's incoming relationships.",
+          "fields": [
+            "to_blob_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "import_job",
+      "name": "import_job",
+      "table": "import_jobs",
+      "description": "The state of one import of an outside codebase.",
+      "indexes": [
+        {
+          "name": "status",
+          "description": "Lists the imports still running.",
+          "fields": [
+            "status"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "fetch_branch_job",
+      "name": "fetch_job",
+      "table": "fetch_jobs",
+      "description": "The state of one on-demand fetch of a single line of work.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's branch fetches.",
+          "fields": [
+            "repo_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    }
+  ]
+}

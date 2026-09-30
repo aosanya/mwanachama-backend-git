@@ -1,0 +1,221 @@
+{
+  "module": "git",
+  "objects": [
+    {
+      "role": "repository",
+      "description": "One versioned codebase. Everything else in this module hangs off a repository, directly or through a branch.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this repository.", "primary": true},
+        {"name": "name", "type": "string", "description": "The human-readable repository name, unique enough in practice that callers look a repository up by it.", "required": true},
+        {"name": "description", "type": "text", "description": "What this repository holds, in the words of whoever created it."},
+        {"name": "default_branch", "type": "string", "description": "The name of the branch a caller gets when it names none. Set at creation and never empty afterwards."},
+        {"name": "bare_clone_path", "type": "string", "description": "Filesystem path of the bare shallow clone lazy import writes, reused when a branch is fetched on demand and when a blob's content is hydrated. Local to the process that imported, so it is never part of an API response."},
+        {"name": "source_url", "type": "string", "description": "The remote HTTPS URL this repository was imported from. Empty for one created locally."},
+        {"name": "created_at", "type": "timestamp", "description": "When the repository was created."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the repository was last changed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the repository has been removed from view."}
+      ]
+    },
+    {
+      "role": "branch",
+      "description": "A named, mutable ref pointing at a commit. One branch per task in the task-branch workflow, deleted once its work is merged.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this branch.", "primary": true},
+        {"name": "repository_id", "type": "string", "description": "The repository this branch belongs to."},
+        {"name": "name", "type": "string", "description": "The ref name, such as \"main\" or \"task/abc123\".", "required": true},
+        {"name": "is_default", "type": "bool", "description": "Whether this is the repository's default branch."},
+        {"name": "head_commit_id", "type": "string", "description": "The commit at the branch tip. Advanced under a compare-and-set on every push and merge, so two concurrent writers cannot both win."},
+        {"name": "sha", "type": "string", "description": "The git hash at the branch tip, held beside the head commit so a caller reads the tip without a second lookup."},
+        {"name": "status", "type": "string", "description": "How much of this branch has actually been fetched, for a repository imported lazily: \"stub\" (known but not fetched), \"fetching\", \"fetched\", \"fetch_failed\". Empty for a branch created directly, which is fetched by definition. Deliberately not an enum, because empty is the ordinary case and an enum would refuse it."},
+        {"name": "source_url", "type": "string", "description": "The remote URL a stub branch is fetched from. Empty once fetched and for a branch created directly."},
+        {"name": "error_message", "type": "text", "description": "Why the last fetch of this branch failed. Empty otherwise."},
+        {"name": "workflow_run_id", "type": "string", "description": "The orchestrated run that created this branch, so a rollback can find every branch one run produced. Empty for a branch created outside any run."},
+        {"name": "created_at", "type": "timestamp", "description": "When the branch was created."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the branch tip last moved."},
+        {"name": "deleted", "type": "bool", "description": "Whether the branch has been removed from view."}
+      ]
+    },
+    {
+      "role": "commit",
+      "description": "An immutable commit. Content-addressed by sha and never changed after it is written.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this commit.", "primary": true},
+        {"name": "repository_id", "type": "string", "description": "The repository this commit was indexed into."},
+        {"name": "sha", "type": "string", "description": "The full 40-character hex commit hash. Deliberately NOT unique: the same content is legitimately re-materialised by more than one write path, and the same bytes are shared across repositories the way a fork shares objects on a real git host."},
+        {"name": "message", "type": "text", "description": "The commit message as git stores it."},
+        {"name": "author_name", "type": "string", "description": "Who wrote the change."},
+        {"name": "author_email", "type": "string", "description": "The author's email as git recorded it."},
+        {"name": "author_at", "type": "timestamp", "description": "When the change was written."},
+        {"name": "committer_name", "type": "string", "description": "Who applied the change, which differs from the author after a rebase or a cherry-pick."},
+        {"name": "committer_email", "type": "string", "description": "The committer's email as git recorded it."},
+        {"name": "committed_at", "type": "timestamp", "description": "When the change was applied."},
+        {"name": "tree_id", "type": "string", "description": "The root tree this commit points at. Empty where the tree was never indexed, which is what the history walk tests for before it descends.", "nullable": true},
+        {"name": "data", "type": "text", "description": "The raw git commit object, base64-encoded. Written only where this module built the object itself; empty for a commit indexed from a clone, which never re-encodes what git already has."},
+        {"name": "size", "type": "int", "description": "Byte size of the raw commit object."},
+        {"name": "created_at", "type": "timestamp", "description": "When this commit was indexed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the commit has been removed from view."}
+      ]
+    },
+    {
+      "role": "commit_parent",
+      "description": "One link from a commit to one of its parents. A commit walk that does not write these leaves the history it just indexed unreachable, because history is resolved solely through this table.",
+      "fields": [
+        {"name": "commit_id", "type": "string", "description": "The child commit.", "primary": true},
+        {"name": "parent_id", "type": "string", "description": "One of its parents.", "primary": true},
+        {"name": "parent_index", "type": "int", "description": "Git's own parent order: 0 is the first parent, 1 and up are merge parents. Held explicitly so a merge parent is never mistaken for a first parent, which it would be if the order fell out of insertion order."}
+      ]
+    },
+    {
+      "role": "tree",
+      "description": "An immutable directory listing at one point in time. The root tree of a commit, or a nested subdirectory of one.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this tree.", "primary": true},
+        {"name": "sha", "type": "string", "description": "The full 40-character hex tree hash. Not unique, for the same reason a commit's is not."},
+        {"name": "path", "type": "string", "description": "The directory path within the commit's hierarchy. Empty denotes the root tree."},
+        {"name": "entries", "type": "json", "description": "The child entries as git lists them, each with a name, a mode and a sha."},
+        {"name": "data", "type": "text", "description": "The raw git tree object, base64-encoded. Written only where this module built the object itself."},
+        {"name": "size", "type": "int", "description": "Byte size of the raw tree object."},
+        {"name": "created_at", "type": "timestamp", "description": "When this tree was indexed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the tree has been removed from view."}
+      ]
+    },
+    {
+      "role": "tree_blob",
+      "description": "One file directly inside one tree. Many-to-many, because identical content is reachable from more than one tree.",
+      "fields": [
+        {"name": "tree_id", "type": "string", "description": "The directory.", "primary": true},
+        {"name": "blob_id", "type": "string", "description": "The file inside it.", "primary": true}
+      ]
+    },
+    {
+      "role": "tree_subtree",
+      "description": "One directory nested directly inside another.",
+      "fields": [
+        {"name": "tree_id", "type": "string", "description": "The containing directory.", "primary": true},
+        {"name": "subtree_id", "type": "string", "description": "The directory inside it.", "primary": true}
+      ]
+    },
+    {
+      "role": "blob",
+      "description": "An immutable file content. Content-addressed by sha, so identical bytes at the same path are one row however many trees reach it.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this blob.", "primary": true},
+        {"name": "sha", "type": "string", "description": "The full 40-character hex blob hash. Not unique: the same bytes legitimately sit at more than one path, so a row is identified by sha and path together."},
+        {"name": "path", "type": "string", "description": "The file path from the repository root, such as \"src/handlers/server.go\"."},
+        {"name": "name", "type": "string", "description": "The base file name including its extension."},
+        {"name": "extension", "type": "string", "description": "The file extension with no leading dot."},
+        {"name": "size", "type": "int", "description": "Byte size of the file content."},
+        {"name": "encoding", "type": "string", "description": "\"utf-8\" for text, \"base64\" for binary. Says how to read the content field."},
+        {"name": "content", "type": "text", "description": "The file content, base64-encoded where the encoding says so. Empty until hydrated, for a repository imported lazily."},
+        {"name": "data", "type": "text", "description": "The raw git blob object, base64-encoded. Written only where this module built the object itself."},
+        {"name": "created_at", "type": "timestamp", "description": "When this blob was indexed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the blob has been removed from view."}
+      ]
+    },
+    {
+      "role": "tag",
+      "description": "An immutable named ref pointing at a commit. Once written, what it points at must never change.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this tag.", "primary": true},
+        {"name": "repository_id", "type": "string", "description": "The repository this tag belongs to."},
+        {"name": "commit_id", "type": "string", "description": "The commit this tag resolves to, where that commit is indexed."},
+        {"name": "name", "type": "string", "description": "The tag name, such as \"v1.2.0\".", "required": true},
+        {"name": "sha", "type": "string", "description": "The commit hash this tag resolves to, held whether or not the commit itself is indexed."},
+        {"name": "message", "type": "text", "description": "The annotation on an annotated tag. Empty for a lightweight one."},
+        {"name": "tagger_name", "type": "string", "description": "Who created an annotated tag."},
+        {"name": "tagger_at", "type": "timestamp", "description": "When an annotated tag was created."},
+        {"name": "created_at", "type": "timestamp", "description": "When this tag was recorded."},
+        {"name": "deleted", "type": "bool", "description": "Whether the tag has been removed from view."}
+      ]
+    },
+    {
+      "role": "merge_request",
+      "description": "A request to merge one branch into another, and the record of what happened to it.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this merge request.", "primary": true},
+        {"name": "repository_id", "type": "string", "description": "The repository both branches belong to."},
+        {"name": "source_branch_id", "type": "string", "description": "The branch whose work is being merged."},
+        {"name": "target_branch_id", "type": "string", "description": "The branch it is being merged into. Falls back to the repository's default branch where the caller names none, and always names a real branch once written."},
+        {"name": "title", "type": "string", "description": "A one-line summary of the change.", "required": true},
+        {"name": "description", "type": "text", "description": "What the change does, at whatever length its author wanted."},
+        {"name": "source_branch_name", "type": "string", "description": "The source branch's name as it read when the request was opened, so the record still means something after the branch is deleted."},
+        {"name": "target_branch_name", "type": "string", "description": "The target branch's name as it read when the request was opened."},
+        {"name": "status", "type": "enum", "description": "Where this request has got to.", "values": ["open", "merged", "closed", "failed", "rolled_back"]},
+        {"name": "merged_commit_sha", "type": "string", "description": "The target branch's new tip once the merge succeeded. Empty until then."},
+        {"name": "author_name", "type": "string", "description": "Who opened the request."},
+        {"name": "error_message", "type": "text", "description": "Why the merge failed. Empty unless the status says it did."},
+        {"name": "workflow_run_id", "type": "string", "description": "The orchestrated run that opened this request, so a rollback can find every request one run produced. Empty for one opened by hand."},
+        {"name": "created_at", "type": "timestamp", "description": "When the request was opened."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the request last changed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the request has been removed from view."}
+      ]
+    },
+    {
+      "role": "keyword",
+      "description": "One label in a free-form taxonomy used to tag files. Keywords form a tree, and asking for a parent reaches its descendants.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this keyword.", "primary": true},
+        {"name": "parent_id", "type": "string", "description": "The keyword above this one. Empty for a root keyword, which is what a list of roots filters on.", "nullable": true},
+        {"name": "name", "type": "string", "description": "The label itself.", "required": true},
+        {"name": "description", "type": "text", "description": "What this label is for, so two people tag the same way."},
+        {"name": "scope", "type": "string", "description": "An optional grouping for the label, such as \"domain\", \"layer\" or \"technology\"."},
+        {"name": "created_at", "type": "timestamp", "description": "When the keyword was created."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the keyword last changed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the keyword has been removed from view."}
+      ]
+    },
+    {
+      "role": "blob_keyword_tag",
+      "description": "Records that one file carries one keyword, on one branch. Branch-scoped, so the tagging follows the work: replicated when a branch merges and dropped when it is deleted.",
+      "fields": [
+        {"name": "branch_id", "type": "string", "description": "The branch this tagging holds on.", "primary": true},
+        {"name": "blob_id", "type": "string", "description": "The file being tagged.", "primary": true},
+        {"name": "keyword_id", "type": "string", "description": "The label it carries.", "primary": true},
+        {"name": "signal", "type": "string", "description": "How deeply this file covers the keyword, ranked when results are ordered: \"surface\", \"index\", \"structural\", \"contributor\", \"authority\". Deliberately not an enum, because an unrecognised value ranks last rather than being refused, and that tolerance is the existing behaviour."},
+        {"name": "note", "type": "text", "description": "Why this file was tagged, in the tagger's words."},
+        {"name": "created_at", "type": "timestamp", "description": "When the tagging was made."}
+      ]
+    },
+    {
+      "role": "blob_reference",
+      "description": "One named relationship between two files, on one branch. A fixed shape with both ends typed, not a generic edge: it cannot express a link between anything else.",
+      "fields": [
+        {"name": "branch_id", "type": "string", "description": "The branch this relationship holds on.", "primary": true},
+        {"name": "from_blob_id", "type": "string", "description": "The file the relationship points from.", "primary": true},
+        {"name": "name", "type": "enum", "description": "What the relationship means. Both directions of a pair are stored as separate rows, so a lookup from either end is a plain indexed query.", "primary": true, "values": ["tagged_with", "references", "referenced_by", "documents", "documented_by", "depends_on", "imported_by"]},
+        {"name": "to_blob_id", "type": "string", "description": "The file the relationship points to.", "primary": true},
+        {"name": "descriptor", "type": "text", "description": "What this particular link is about, where the name alone does not say."},
+        {"name": "created_at", "type": "timestamp", "description": "When the relationship was recorded."}
+      ]
+    },
+    {
+      "role": "import_job",
+      "description": "The state of one asynchronous import of a remote repository.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this job.", "primary": true},
+        {"name": "name", "type": "string", "description": "The name the imported repository is to be given."},
+        {"name": "source_url", "type": "string", "description": "The public HTTPS URL being cloned. No credentials are accepted, so a private repository cannot be imported this way."},
+        {"name": "default_branch", "type": "string", "description": "Which branch of the remote to mark as the default."},
+        {"name": "status", "type": "enum", "description": "Where this import has got to.", "values": ["pending", "running", "completed", "failed", "cancelled"]},
+        {"name": "error_message", "type": "text", "description": "Why the import failed. Empty unless the status says it did."},
+        {"name": "created_at", "type": "timestamp", "description": "When the import was requested."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the job last changed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the job has been removed from view."}
+      ]
+    },
+    {
+      "role": "fetch_branch_job",
+      "description": "The state of one asynchronous on-demand fetch of a single branch, for a repository that was imported without its full history.",
+      "fields": [
+        {"name": "id", "type": "string", "description": "Storage key for this job.", "primary": true},
+        {"name": "repo_id", "type": "string", "description": "The repository whose branch is being fetched."},
+        {"name": "branch_name", "type": "string", "description": "Which branch to fetch."},
+        {"name": "status", "type": "enum", "description": "Where this fetch has got to.", "values": ["pending", "running", "completed", "failed"]},
+        {"name": "error_message", "type": "text", "description": "Why the fetch failed. Empty unless the status says it did."},
+        {"name": "created_at", "type": "timestamp", "description": "When the fetch was requested."},
+        {"name": "updated_at", "type": "timestamp", "description": "When the job last changed."},
+        {"name": "deleted", "type": "bool", "description": "Whether the job has been removed from view."}
+      ]
+    }
+  ]
+}

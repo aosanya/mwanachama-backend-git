@@ -1,0 +1,360 @@
+{
+  "module": "git",
+  "domain": "chambers",
+  "instance": "chambers",
+  "objects": [
+    {
+      "role": "repository",
+      "name": "matter",
+      "table": "matters",
+      "description": "One client matter whose documents the chambers versions.",
+      "indexes": [
+        {
+          "name": "name",
+          "description": "Finds a repository by the name a caller knows it as.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "branch",
+      "name": "negotiation",
+      "table": "negotiations",
+      "description": "One negotiating position on a matter, folded back in once agreed.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's branches.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "name",
+          "description": "Finds a branch by name within a repository.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "head",
+          "description": "Finds the branch whose tip is a given commit.",
+          "fields": [
+            "head_commit_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "run",
+          "description": "Finds every branch one orchestrated run produced, for rollback.",
+          "fields": [
+            "workflow_run_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "commit",
+      "name": "revision",
+      "table": "revisions",
+      "description": "One recorded revision to a matter's documents.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's commits.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "sha",
+          "description": "Finds a commit by hash, which is how every indexing path checks whether it already has one.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "tree",
+          "description": "Finds the commit that points at a given root tree.",
+          "fields": [
+            "tree_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "commit_parent",
+      "name": "revision_parent",
+      "table": "revision_parents",
+      "description": "Which revision a revision was made against.",
+      "indexes": [
+        {
+          "name": "parent",
+          "description": "Walks history backwards from a parent to its children.",
+          "fields": [
+            "parent_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "tree",
+      "name": "bundle",
+      "table": "bundles",
+      "description": "The set of documents as they stood at one revision.",
+      "indexes": [
+        {
+          "name": "sha",
+          "description": "Finds a tree by hash.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "tree_blob",
+      "name": "bundle_document",
+      "table": "bundle_documents",
+      "description": "A document directly inside a bundle.",
+      "indexes": [
+        {
+          "name": "blob",
+          "description": "Finds every directory a file is reachable from.",
+          "fields": [
+            "blob_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "tree_subtree",
+      "name": "bundle_section",
+      "table": "bundle_sections",
+      "description": "A bundle nested inside a bundle.",
+      "indexes": [
+        {
+          "name": "subtree",
+          "description": "Finds every directory a subdirectory sits in.",
+          "fields": [
+            "subtree_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "blob",
+      "name": "document",
+      "table": "documents",
+      "description": "One document's text as it stood at a revision.",
+      "indexes": [
+        {
+          "name": "sha",
+          "description": "Finds a file by content hash.",
+          "fields": [
+            "sha"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "path",
+          "description": "Finds a file by the path it sits at.",
+          "fields": [
+            "path"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "tag",
+      "name": "execution",
+      "table": "executions",
+      "description": "A named, frozen revision: the version that was signed.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's tags.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "commit",
+          "description": "Finds the tags pointing at a commit.",
+          "fields": [
+            "commit_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "name",
+          "description": "Finds a tag by name.",
+          "fields": [
+            "name"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "merge_request",
+      "name": "engrossment",
+      "table": "engrossments",
+      "description": "A request to fold one negotiating position into the agreed text.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's merge requests.",
+          "fields": [
+            "repository_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "source",
+          "description": "Finds the request merging a given branch.",
+          "fields": [
+            "source_branch_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "target",
+          "description": "Lists the requests aimed at a given branch.",
+          "fields": [
+            "target_branch_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "status",
+          "description": "Lists the open requests without reading the closed ones.",
+          "fields": [
+            "status"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "run",
+          "description": "Finds every request one orchestrated run opened, for rollback.",
+          "fields": [
+            "workflow_run_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "keyword",
+      "name": "clause_type",
+      "table": "clause_types",
+      "description": "A label the chambers files documents under, such as an indemnity or a warranty.",
+      "indexes": [
+        {
+          "name": "parent",
+          "description": "Lists a keyword's children.",
+          "fields": [
+            "parent_id"
+          ],
+          "not_deleted": true
+        },
+        {
+          "name": "scope",
+          "description": "Lists the keywords in one grouping.",
+          "fields": [
+            "scope"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "blob_keyword_tag",
+      "name": "document_clause",
+      "table": "document_clauses",
+      "description": "Records that a document carries a clause type.",
+      "indexes": [
+        {
+          "name": "blob",
+          "description": "Lists the keywords one file carries.",
+          "fields": [
+            "blob_id"
+          ]
+        },
+        {
+          "name": "keyword",
+          "description": "Finds every file carrying one keyword.",
+          "fields": [
+            "keyword_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "blob_reference",
+      "name": "document_link",
+      "table": "document_links",
+      "description": "A named relationship between two documents, such as a schedule to its agreement.",
+      "indexes": [
+        {
+          "name": "from",
+          "description": "Follows a file's outgoing relationships.",
+          "fields": [
+            "from_blob_id"
+          ]
+        },
+        {
+          "name": "to",
+          "description": "Follows a file's incoming relationships.",
+          "fields": [
+            "to_blob_id"
+          ]
+        }
+      ]
+    },
+    {
+      "role": "import_job",
+      "name": "intake_job",
+      "table": "intake_jobs",
+      "description": "The state of one intake of a matter's documents from outside.",
+      "indexes": [
+        {
+          "name": "status",
+          "description": "Lists the imports still running.",
+          "fields": [
+            "status"
+          ],
+          "not_deleted": true
+        }
+      ]
+    },
+    {
+      "role": "fetch_branch_job",
+      "name": "retrieval_job",
+      "table": "retrieval_jobs",
+      "description": "The state of one on-demand retrieval of a single negotiating position.",
+      "indexes": [
+        {
+          "name": "repository",
+          "description": "Lists a repository's branch fetches.",
+          "fields": [
+            "repo_id"
+          ],
+          "not_deleted": true
+        }
+      ]
+    }
+  ]
+}
