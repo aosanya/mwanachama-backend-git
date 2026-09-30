@@ -42,9 +42,9 @@ packfile and needs its own path since go-git's `ReceivePack` fails on an
 empty one).
 
 **A commit walk that creates `Commit` rows is only half the job** — it must
-also write the `git_commit_parents` join rows, or the history it just
+also write the commit_parent join rows, or the history it just
 indexed is unreachable. `Log` resolves history solely through
-`gormstore.CommitChainIDs`' recursive CTE over that table, so an unlinked
+`CommitChainIDs`' recursive CTE over that table, so an unlinked
 tip reports a one-commit history however many commits were actually
 indexed. `git_impl_push.go`'s `linkCommitParents` does this for the push
 path (added 2026-09-16, after review caught `walkNewCommits` omitting it);
@@ -84,109 +84,67 @@ Also dropped from the original: `proto/`, `cmd/server`, `internal/server`
 heartbeat) — `mwanachama-backend-api-gateway` runs as one service and imports this
 package directly.
 
-**Storage moved from entitygraph to GORM, 2026-09-04.** This package
-originally stored Repository/Branch/MergeRequest/Tag/Commit/Tree/Blob/Keyword
-through `mwanachama-backend-shared/entitygraph.DataManager` — a generic,
-runtime-versioned entity/relationship graph engine, with every entity
-sharing one Postgres `entities` table and every edge sharing one
-`relationships` table. Follows the same storage-layer migration
-`mwanachama-backend-actor` did on 2026-09-04, applied here to a much larger
-domain (10 entity types instead of 3) and — the one thing actor's migration
-never had to solve — three methods (`GetNeighborhood`, `SearchByKeywords`,
-`QueryGraph`) that did generic, any-type/any-direction graph exploration
-against entitygraph's shared relationships table. This was a storage-layer
-swap only: `GitManager`'s method set is unchanged; only `NewGitManager`'s
-constructor and everything behind it changed shape. See the `gormstore/`
-package.
+## Objects and routes are declared, not written
 
-**Flattened fully to explicit typed FK columns and join tables — no
-generic edges table survives, 2026-09-04.** Decided explicitly (not
-inherited from actor by default): actor's migration had no generic-graph
-feature to preserve in the first place, so "follow actor's precedent" here
-meant flattening completely, the same way actor's one relationship
-(`ActorGroupAssignment`) became a real join table rather than a
-polymorphic edge row. Sixteen physical tables replace entitygraph's two:
-nine node tables (one per entity type) plus four join tables —
-`git_commit_parents` (many-to-many, `parent_index` preserving first-parent
-vs. merge-parent order), `git_tree_blobs`, `git_tree_subtrees`, and two
-fixed-shape Blob&harr;Blob/Blob&harr;Keyword tables
-(`git_blob_keyword_tags` for `tagged_with`, `git_blob_references` for
-`references`/`referenced_by`/four other constrained labels — see
-`git_impl_keywords.go`'s `validDocEdges`). See `gormstore/tables.go` for the
-full column-by-column schema and `gormstore/queries.go` for the recursive
-CTEs (`BlobsAtCommit`, `CommitChainIDs`, `KeywordDescendantIDs`) and the
-sixteen-shape edge catalogue (`NeighborhoodEdges`) that replace entitygraph's
-generic traversal.
+**The tables come from `git.blueprint.json`, not from Go structs.** Fifteen
+objects, every field with its type and description, reached through
+`Blueprint()`, `LoadSpec(path)` and `ParseSpec(raw)` — never through
+`spec.Load`, or the roled objects arrive with no fields. A domain spec names
+which object fills each role, what the domain calls it, which table it lands
+in and its own indexes; it may not restate a type, a description or a rule.
+`spec/examples/` ships two: `engineering` and `chambers`, a law firm
+versioning contract drafts, so domain-neutrality is exercised rather than
+asserted.
 
-**What this costs, precisely (`git_impl_graph.go`):**
-- `GetNeighborhood`'s `GraphEdge.ID` is no longer a real storage key — FK-
-  and join-derived edges have no row ID, so it's now a synthetic
-  `"<name>:<fromID>:<toID>"` used only for BFS dedup. No caller round-tripped
-  an edge ID before, so nothing breaks, but the value's meaning changed.
-- Any edge label outside the enumerated sixteen shapes (or outside
-  `blob_references`'s constrained `Name` set) is unrepresentable without a
-  schema migration — the direct consequence of flattening, not an oversight.
-- `SearchByKeywords`'s result set is now formally all-Blob (it always was in
-  practice — `tagged_with` only ever pointed at Blobs — just was type-open
-  before).
-- `QueryGraph` and `SearchByKeywords` still don't filter by `req.BranchID`
-  on the `tagged_with`/`references` rows themselves (only a branch
-  *existence* check runs first) — a real, pre-existing gap carried over
-  unchanged from the entitygraph version, not fixed here. Each is a one-line
-  `AND branch_id = ?` addition later if ever wanted.
+**The route table comes from `git.operations.json`.** Forty of the
+forty-three addresses; `routes/routes.go` is the sentinel map, the
+`dispatch.Table` and the builder ladder, and there are no handlers. The other
+three are in `routes/undeclared.go` — see
+[documentation/2. design/routes.md](documentation/2.%20design/routes.md) for
+which and why.
 
-**Behavior fixed along the way (not mechanical, called out explicitly):**
-- `Keyword.ChildIDs` is now actually populated by `GetKeyword` (the
-  entitygraph-era `entityToKeyword` never filled it).
-- `ListKeywords`/`listKeywordsByParent("")` now correctly returns only root
-  keywords — the entitygraph version returned *every* keyword when
-  `parentID == ""` and left filtering to the caller (its own code comment
-  apologized for this).
-- `DeleteKeyword` now cascades a delete on `git_blob_keyword_tags` for the
-  removed keyword — the entitygraph version left `tagged_with` rows
-  dangling against a keyword that no longer existed.
-- `advanceBranchHead`'s CAS guard is a single conditional `UPDATE ... WHERE
-  id = ? AND head_commit_id = ?` (checking `RowsAffected`) instead of a
-  separate read-then-write — closes the race window the old
-  read-then-CreateRelationship/UpdateEntity pair had between the check and
-  the write.
+**`Provision(db, *spec.Spec)` is the whole storage story.** `spec.Migrate`
+emits the DDL; the blob full-text GIN index follows it, because `spec` has no
+expression index. `cmd/ddl` prints both so a spec can be read as SQL before
+it is trusted. There is no `AutoMigrate`.
 
-**Behavior deliberately NOT fixed (preserved for parity, do not "fix" without
-a scoped decision):**
-- `Commit`/`Tree`/`Blob` `sha` has **no unique index**. Entitygraph declared
-  `UniqueKey: []string{"sha"}` for all three but this repo only ever called
-  `CreateEntity`, never `UpsertEntity` — the one call that actually applied
-  a partial unique index — so the declared uniqueness was never enforced.
-  Adding a real unique index now would break previously-succeeding writes
-  (e.g. `WriteFile`/`FetchBranch` re-materialising the same content). The
-  `errors.Is(err, ErrEntityAlreadyExists)`-guarded fallback lookups in the
-  old `git_impl_fetchbranch.go` were dead code for the same reason and were
-  deleted, not ported.
-- `WriteFile` still wires every blob directly onto the root tree
-  (`git_tree_blobs`), not through the actual nested subtree structure — the
-  non-root `Tree` rows `buildNestedTrees` produces are created but never
-  linked by any join row. `FetchBranch`'s `upsertTreeMetadataWithEdges` *does*
-  wire proper nesting (`git_tree_subtrees`); this asymmetry between the two
-  write paths is inherited, not introduced.
-- ~~Repositories created via `ImportRepo`/`runImport` are not linked to the
-  singleton `Agency` row (`AgencyID` stays `NULL`) — only `InitRepo` links
-  one. Pre-existing gap, carried over unchanged.~~ Moot as of 2026-09-09: the
-  `Agency` concept (model, gormstore row, table, `ensureAgencyEntity`,
-  `Repository.AgencyID`/`agency_id`, and the `has_repository` graph-edge
-  shape derived from it) was removed outright as vestigial CodeValdGit-era
-  single-tenant plumbing that this package's single-Agency, single-database
-  scoping made pointless — see `documentation/3. implementation/todo_done.md`.
+**A column is found by field name, never by json tag.** `SubmittedBy` is
+`submitted_by`. The tag is a presentation choice and gets this wrong where it
+hurts. **Every declared column is written on every write**, because a map
+missing a key means "leave it alone" to an update.
 
-**Scope: this repo only, 2026-09-04.** `mwanachama-backend-api-gateway`'s
-wiring (`cmd/server/stores.go`'s `memoryStores`/`postgresStores`, both of
-which construct `mwanachamagit.NewGitManager` inline — there is no
-`git_instances.go` isolation layer the way actor's migration had
-`user_instances.go`) now calls a `NewGitManager` signature that no longer
-exists and will not compile until a follow-up change updates it — not done
-here, by explicit scope decision, mirroring actor's own precedent. The
-gateway repo was independently broken for unrelated reasons
-(`mwanachamacomm` package) at the time of this migration, so this is not a
-newly-introduced regression to a previously-green build.
+**The spec and the types are checked against each other when the manager is
+built.** A declared column with no field, or a field with no column, fails in
+`NewGitManager` rather than dropping a value on every write. The six fields
+that are genuinely held elsewhere carry `spec:"-"` — see the decision record.
+
+**A table is `<instance>_hashOf(<mount>)_hashOf(<module>_<object>)`.** Only
+the instance stays readable. Assert on `RawNameFor` in tests, never on a
+physical name, and exclude `%_spec_table_names` from anything counting
+tables.
+
+**IDs are minted explicitly.** The uuid used to come from a GORM
+`BeforeCreate` hook on the row structs; nothing reaches such a hook now, so
+`ensureID` runs at each create. Every create that skipped it wrote an empty
+id and collided on the second row.
+
+**Three things are held exactly as they were and must not be "fixed" in
+passing**: `sha` carries no unique index, `branch.status` and
+`blob_keyword_tag.signal` are strings rather than enums. The reasons are in
+[documentation/1. requirements/declared-domain-decisions.md](documentation/1.%20requirements/declared-domain-decisions.md).
+
+## What is superseded
+
+| Was | Now | Board row |
+| --- | --- | --- |
+| `gormstore/` — 13 row structs, `*ToRow`/`*FromRow`, `Migrate`, `AutoMigrate` | `git.blueprint.json` + `specstore`; the row structs had become the domain types field for field | G17 |
+| `tables.go` — `TableNames`, `DefaultTableNames`, `Migrate` re-exports | `Provision(db, *spec.Spec)`, physical names from the spec | G17 |
+| `gormstore/queries.go` | `queries.go` in the root package, on the spec's names | G17 |
+| 13 route files, 43 decode-call-encode handlers, `routes/wire.go`'s `gitStatusFor`/`writeGitErr`/`readJSON`/`writeJSON` | `git.operations.json` + `dispatch.Table`; `httpwire` for the rest | G17 |
+| `validDocEdges` | the `blob_reference.name` enum, read through `checksField` | G17 |
+| `fileEntryJSON`/`commitEntryJSON`/`fileDiffJSON` shaping helpers | json tags on `FileEntry`/`FileDiff`, and `CommitEntry.MarshalJSON` for the RFC3339 timestamp | G17 |
+| per-field doc comments in `models/` | the blueprint's `description` fields | G17 |
+
 
 ## Porting notes
 
@@ -200,9 +158,9 @@ newly-introduced regression to a previously-green build.
   split (only true domain types move to `models/`).
 - Three domain fields are no longer stored columns, only derived at read
   time and written via a companion join-row builder at write time:
-  `Commit.ParentIDs` (`gormstore.CommitParentRow`, ordered by
-  `ParentIndex`), `Tree.BlobIDs`/`Tree.SubtreeIDs` (`gormstore.TreeBlobRow`/
-  `TreeSubtreeRow`), `Keyword.ChildIDs` (a query on `KeywordRow.ParentID`).
+  `Commit.ParentIDs` (the `commit_parent` object, ordered by
+  `parent_index`), `Tree.BlobIDs`/`Tree.SubtreeIDs` (`tree_blob`/
+  `tree_subtree`), `Keyword.ChildIDs` (a query on `KeywordRow.ParentID`).
 - `Blob.TreeID` stays on the domain type for JSON-contract compatibility but
   is never populated — content-addressed blobs are reachable from more than
   one tree (`git_tree_blobs` is genuinely many-to-many), so there is no
@@ -217,7 +175,7 @@ newly-introduced regression to a previously-green build.
   repository, then loop) collapses into one filtered query.
   `git_impl_converters.go`'s `allBlobsAtCommit` and `git_impl_fileops.go`'s
   `walkCommitChain`/`git_impl_keywords.go`'s keyword-tree build all move
-  from Go-side BFS/recursion to recursive CTEs (`gormstore.BlobsAtCommit`,
+  from Go-side BFS/recursion to recursive CTEs (`BlobsAtCommit`,
   `CommitChainIDs`, `KeywordDescendantIDs`).
 - `blobcache.go`, `fileops.go`, `import.go`, `fetchbranch.go` build real git
   objects via `go-git/plumbing/object` — kept the `go-git` object model for
@@ -228,7 +186,7 @@ newly-introduced regression to a previously-green build.
   entitygraph — the smallest-touch file in the port. Only the column
   addressing changed (`properties->>'name'` → `name`, no more `type_id =
   'Blob'` predicate since the table *is* blobs now); the tsvector/ts_rank/
-  GIN-index mechanism carries over byte-for-byte. See `gormstore.BlobFTSExpr`
+  GIN-index mechanism carries over byte-for-byte. See `BlobFTSExpr`
   for the one shared expression the query and the migration-time index must
   stay textually identical to.
 - Test infrastructure: `testdb_test.go`'s sqlite-in-memory `newTestManager`

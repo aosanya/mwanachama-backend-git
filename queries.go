@@ -159,7 +159,6 @@ func NeighborhoodEdges(db *gorm.DB, t tableSet, frontier []string) ([]RawEdge, e
 		edges = append(edges, rows...)
 	}
 
-	// "referenced_by"), so it can't use the constant-label template above.
 	refQ := fmt.Sprintf("SELECT name, from_blob_id AS from_id, to_blob_id AS to_id FROM %s WHERE from_blob_id IN ? OR to_blob_id IN ?", t.BlobReferences)
 	var refRows []RawEdge
 	if err := db.Raw(refQ, frontier, frontier).Scan(&refRows).Error; err != nil {
