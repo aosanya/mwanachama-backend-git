@@ -28,5 +28,22 @@ Guarded by `routes/graph_crossrepo_test.go`'s
 `TestG15_QueryGraphStaysInsideTheCallersBranch` and
 `TestG15_SearchByKeywordsStaysInsideTheCallersBranch`.
 
-`GetNeighborhood`'s path fallback (`resolveEntityID`) still resolves a path
-against the whole Blob table; that is G16 and is not changed here.
+## A neighbourhood named by path (G16)
+
+`GetNeighborhood` (`GET /branches/{branchID}/neighborhood/{entityID}`) accepts a
+file path in place of a row id. Until G16 that fallback (`resolveEntityID`)
+looked the path up across the deployment's whole Blob table, so a caller
+holding any branch could read another repository's file by guessing its name
+(`secrets.txt`, `.env`), with no id at all.
+
+The fallback now looks the path up only among the blobs at the named branch's
+head commit, the same `allBlobsAtCommit` set as above. A path the branch does
+not hold, or a branch with no head commit, answers `ErrEntityNotFound` (404),
+exactly as a path nobody holds.
+
+A raw row id is still resolved across every node table, as before; G16 is the
+path fallback only.
+
+Guarded by `routes/graph_neighborhood_crossrepo_test.go`'s
+`TestG16_NeighborhoodByPathStaysInsideTheCallersBranch`, which also checks the
+caller's own path still resolves.

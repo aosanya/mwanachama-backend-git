@@ -41,7 +41,8 @@ const neighborhoodMaxNodes = 100
 //
 // depth is clamped to [1, 3]. The branch must exist (verified before traversal).
 func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID string, depth int) (GraphResult, error) {
-	if _, err := m.GetBranch(ctx, branchID); err != nil {
+	branch, err := m.GetBranch(ctx, branchID)
+	if err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
 			return GraphResult{}, ErrBranchNotFound
 		}
@@ -50,10 +51,7 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 
 	depth = clampDepth(depth)
 
-	// Resolve entityID: callers may pass a file path (e.g. "README.md") instead
-	// of the actual row ID. Try the raw ID first; on not-found fall back to a
-	// Blob lookup by path.
-	resolvedID, err := m.resolveEntityID(ctx, entityID)
+	resolvedID, err := m.resolveEntityID(ctx, branch, entityID)
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: resolve entity: %w", entityID, err)
 	}
@@ -116,27 +114,25 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 	return order, edges, nil
 }
 
-// resolveEntityID returns the canonical row ID. If entityID already names a
-// row in one of the eight node tables it is returned as-is. Otherwise, the
-// method attempts to find a Blob row whose Path matches entityID.
-// Returns [ErrEntityNotFound] if neither resolves.
-func (m *gitManager) resolveEntityID(ctx context.Context, entityID string) (string, error) {
+func (m *gitManager) resolveEntityID(ctx context.Context, branch models.Branch, entityID string) (string, error) {
 	if _, found, err := ResolveNodeType(m.db.WithContext(ctx), m.tables, entityID); err != nil {
 		return "", err
 	} else if found {
 		return entityID, nil
 	}
-
-	var row models.Blob
-	err := m.db.WithContext(ctx).Table(m.tables.Blobs).
-		Where("path = ? AND NOT deleted", entityID).First(&row).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", ErrEntityNotFound
-		}
-		return "", fmt.Errorf("resolveEntityID: list blobs by path %q: %w", entityID, err)
+	if branch.HeadCommitID == "" {
+		return "", ErrEntityNotFound
 	}
-	return row.ID, nil
+	blobs, err := m.allBlobsAtCommit(ctx, branch.HeadCommitID)
+	if err != nil {
+		return "", fmt.Errorf("resolveEntityID: blobs on branch %s: %w", branch.ID, err)
+	}
+	for _, b := range blobs {
+		if b.Path == entityID {
+			return b.ID, nil
+		}
+	}
+	return "", ErrEntityNotFound
 }
 
 // clampDepth enforces the range [1, 3] for traversal depth.
