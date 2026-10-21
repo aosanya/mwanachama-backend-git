@@ -277,10 +277,14 @@ func TestCreateEdgeAndSearchByKeywords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateKeyword: %v", err)
 	}
-	blobRow := models.Blob{Path: "auth.go", Name: "auth.go", CreatedAt: models.NowRFC3339()}
-	ensureID(&blobRow)
-	if err := m.db.WithContext(ctx).Table(m.tables.Blobs).Create(&blobRow).Error; err != nil {
-		t.Fatalf("create blob: %v", err)
+	if _, err := m.WriteFile(ctx, WriteFileRequest{
+		BranchID: branch.ID, Path: "auth.go", Content: "package auth", AuthorName: "test-author",
+	}); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	blobRow, err := m.ReadFile(ctx, branch.ID, "auth.go")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
 
 	if err := m.CreateEdge(ctx, CreateEdgeRequest{

@@ -87,18 +87,7 @@ func nodePaths(result any) []string {
 	return paths
 }
 
-// G15_QueryGraphLeaksBlobsAcrossRepositories pins a known defect (board row
-// G15, todo.md): POST /graph/query only checks that the given branch_id
-// exists (git_impl_graph.go's QueryGraph, ~line 455); it never filters the
-// actual Blob query by that branch or its repository. Driven through the
-// real aggregator + http.ServeMux + http.Client (not the manager directly):
-// an attacker who owns nothing but their own tiny repository can see every
-// Blob's full content anywhere in the deployment, including a completely
-// unrelated repository's private file, just by calling this route scoped to
-// their own branch. A fixed QueryGraph must restrict results to Blobs
-// reachable from the given branch's own repository/history, and this test's
-// "leaked path is present" assertion must invert once that lands.
-func TestG15_QueryGraphLeaksBlobsAcrossRepositories(t *testing.T) {
+func TestG15_QueryGraphStaysInsideTheCallersBranch(t *testing.T) {
 	gm := newTestManager(t)
 	mux := http.NewServeMux()
 	for _, rt := range routes.Routes(gm) {
@@ -126,21 +115,12 @@ func TestG15_QueryGraphLeaksBlobsAcrossRepositories(t *testing.T) {
 			sawVictimSecret = true
 		}
 	}
-	if !sawVictimSecret {
-		t.Fatalf("G15 regression: QueryGraph scoped to the attacker's own branch (%s) no longer returns the victim repository's secrets.txt (paths seen: %v) — this pin needs inverting into a real branch-scoping assertion, see board row G15", attackerBranch, paths)
+	if sawVictimSecret {
+		t.Fatalf("QueryGraph scoped to the attacker's own branch (%s) returned the victim repository's secrets.txt (paths seen: %v)", attackerBranch, paths)
 	}
 }
 
-// G15_SearchByKeywordsLeaksBlobsAcrossRepositories widens G15's finding to
-// the sibling handler in the same file (git_impl_graph.go's
-// SearchByKeywords, ~line 294): its BranchID field carries the identical
-// doc-comment promise ("Only entities reachable from this branch are
-// considered") and the identical bug — taggedBlobsForKeyword queries
-// git_blob_keyword_tags by keyword id alone, with no branch/repository
-// filter at all. An attacker who merely knows a keyword id (keywords are a
-// flat, ungated GET /keywords list) and their own branch id can retrieve a
-// blob from a repository they have no relationship to.
-func TestG15_SearchByKeywordsLeaksBlobsAcrossRepositories(t *testing.T) {
+func TestG15_SearchByKeywordsStaysInsideTheCallersBranch(t *testing.T) {
 	gm := newTestManager(t)
 	mux := http.NewServeMux()
 	for _, rt := range routes.Routes(gm) {
@@ -185,7 +165,7 @@ func TestG15_SearchByKeywordsLeaksBlobsAcrossRepositories(t *testing.T) {
 			sawVictimSecret = true
 		}
 	}
-	if !sawVictimSecret {
-		t.Fatalf("G15 regression: SearchByKeywords scoped to the attacker's own branch (%s) no longer returns the victim repository's secrets.txt (paths seen: %v) — this pin needs inverting once branch scoping is fixed, see board row G15", attackerBranch, paths)
+	if sawVictimSecret {
+		t.Fatalf("SearchByKeywords scoped to the attacker's own branch (%s) returned the victim repository's secrets.txt (paths seen: %v)", attackerBranch, paths)
 	}
 }

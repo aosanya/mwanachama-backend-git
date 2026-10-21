@@ -291,11 +291,20 @@ func blobProps(r models.Blob) map[string]any {
 // have always pointed at in practice, now made explicit by the flattened
 // schema (see this repo's CLAUDE.md).
 func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsRequest) (GraphResult, error) {
-	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
+	branch, err := m.GetBranch(ctx, req.BranchID)
+	if err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
 			return GraphResult{}, ErrBranchNotFound
 		}
 		return GraphResult{}, fmt.Errorf("SearchByKeywords: get branch %s: %w", req.BranchID, err)
+	}
+	reachable, err := m.blobIDsOnBranch(ctx, branch)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("SearchByKeywords: %w", err)
+	}
+	onBranch := make(map[string]bool, len(reachable))
+	for _, id := range reachable {
+		onBranch[id] = true
 	}
 
 	if len(req.Keywords) == 0 {
@@ -313,7 +322,7 @@ func (m *gitManager) SearchByKeywords(ctx context.Context, req SearchByKeywordsR
 		if err != nil {
 			return GraphResult{}, fmt.Errorf("SearchByKeywords: expand keyword %s: %w", kwID, err)
 		}
-		taggedPerSet[i] = set
+		taggedPerSet[i] = intersectSets([]map[string]bool{set, onBranch})
 	}
 
 	var matchedIDs map[string]bool
@@ -452,11 +461,19 @@ type blobWithLayer struct {
 // Replaces the entitygraph-era "load every Blob + every tagged_with edge into
 // memory, then filter/sort in Go" body with one aggregate SQL query.
 func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (GraphResult, error) {
-	if _, err := m.GetBranch(ctx, req.BranchID); err != nil {
+	branch, err := m.GetBranch(ctx, req.BranchID)
+	if err != nil {
 		if errors.Is(err, ErrBranchNotFound) {
 			return GraphResult{}, ErrBranchNotFound
 		}
 		return GraphResult{}, fmt.Errorf("QueryGraph: get branch: %w", err)
+	}
+	reachable, err := m.blobIDsOnBranch(ctx, branch)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("QueryGraph: %w", err)
+	}
+	if len(reachable) == 0 {
+		return GraphResult{Nodes: []GraphNode{}, Edges: []GraphEdge{}}, nil
 	}
 
 	limit := req.Limit
@@ -464,12 +481,13 @@ func (m *gitManager) QueryGraph(ctx context.Context, req QueryGraphRequest) (Gra
 		limit = queryGraphDefaultLimit
 	}
 
-	q := m.db.WithContext(ctx).Table(m.tables.Blobs + " AS b").
-		Select(`b.*, COALESCE(MAX(CASE t.signal ` +
-			`WHEN 'surface' THEN 1 WHEN 'index' THEN 2 WHEN 'structural' THEN 3 ` +
+	q := m.db.WithContext(ctx).Table(m.tables.Blobs+" AS b").
+		Select(`b.*, COALESCE(MAX(CASE t.signal `+
+			`WHEN 'surface' THEN 1 WHEN 'index' THEN 2 WHEN 'structural' THEN 3 `+
 			`WHEN 'contributor' THEN 4 WHEN 'authority' THEN 5 ELSE 0 END), 0) AS max_layer`).
-		Joins("LEFT JOIN " + m.tables.BlobKeywordTags + " AS t ON t.blob_id = b.id").
-		Where("NOT b.deleted")
+		Joins("LEFT JOIN "+m.tables.BlobKeywordTags+" AS t ON t.blob_id = b.id").
+		Where("NOT b.deleted").
+		Where("b.id IN ?", reachable)
 
 	// file_types — suffix match on path, escaped so a caller-supplied value
 	// containing % or _ is matched literally rather than as a wildcard.
@@ -550,4 +568,19 @@ func (m *gitManager) queryGraphEdges(ctx context.Context, nodeIDs map[string]boo
 func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
+}
+
+func (m *gitManager) blobIDsOnBranch(ctx context.Context, branch models.Branch) ([]string, error) {
+	if branch.HeadCommitID == "" {
+		return nil, nil
+	}
+	blobs, err := m.allBlobsAtCommit(ctx, branch.HeadCommitID)
+	if err != nil {
+		return nil, fmt.Errorf("blobs on branch %s: %w", branch.ID, err)
+	}
+	ids := make([]string, len(blobs))
+	for i, b := range blobs {
+		ids[i] = b.ID
+	}
+	return ids, nil
 }
