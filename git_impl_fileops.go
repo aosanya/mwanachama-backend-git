@@ -169,6 +169,9 @@ func (m *gitManager) WriteFile(ctx context.Context, req WriteFileRequest) (model
 // writeFileLocked is the body of WriteFile that must run under the
 // [RefLocker]. Do not call directly outside of WriteFile.
 func (m *gitManager) writeFileLocked(ctx context.Context, req WriteFileRequest) (models.Commit, error) {
+	if err := m.checkFileSize(req); err != nil {
+		return models.Commit{}, fmt.Errorf("WriteFile: %w", err)
+	}
 	branch, err := m.GetBranch(ctx, req.BranchID)
 	if err != nil {
 		return models.Commit{}, fmt.Errorf("WriteFile: %w", err)

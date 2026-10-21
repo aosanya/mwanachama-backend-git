@@ -38,6 +38,7 @@ func Sentinels() map[string]error {
 		"ErrImportJobNotFound":            ErrImportJobNotFound,
 		"ErrFileNotFound":                 ErrFileNotFound,
 		"ErrRefNotFound":                  ErrRefNotFound,
+		"ErrFileTooLarge":                 ErrFileTooLarge,
 		"ErrEdgeNotFound":                 ErrEdgeNotFound,
 		"ErrEntityNotFound":               ErrEntityNotFound,
 		"ErrWorkflowRunIDRequired":        ErrWorkflowRunIDRequired,

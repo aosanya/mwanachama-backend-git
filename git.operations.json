@@ -885,6 +885,7 @@
     "ErrKeywordNotFound": 404,
     "ErrImportJobNotFound": 404,
     "ErrFileNotFound": 404,
+    "ErrFileTooLarge": 413,
     "ErrRefNotFound": 404,
     "ErrEdgeNotFound": 404,
     "ErrEntityNotFound": 404,

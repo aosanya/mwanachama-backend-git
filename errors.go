@@ -124,3 +124,5 @@ var ErrWorkflowRunIDRequired = errors.New("workflow_run_id is required")
 // entitygraph.ErrEntityNotFound, which no longer exists once storage moved
 // off entitygraph — see [ResolveNodeType].
 var ErrEntityNotFound = errors.New("entity not found")
+
+var ErrFileTooLarge = errors.New("file exceeds the size limit")

@@ -431,6 +431,7 @@ type gitManager struct {
 	publisher events.Publisher
 	locker    RefLocker
 	searcher  BlobSearcher
+	maxFile   int64
 }
 
 // NewGitManager constructs a [GitManager] reading and writing the fifteen
@@ -447,6 +448,7 @@ func NewGitManager(
 	pub events.Publisher,
 	locker RefLocker,
 	searcher BlobSearcher,
+	opts ...Option,
 ) (GitManager, error) {
 	if db == nil {
 		return nil, fmt.Errorf("NewGitManager: db must not be nil")
@@ -458,14 +460,18 @@ func NewGitManager(
 	if locker == nil {
 		locker = &mutexLocker{}
 	}
-	return &gitManager{
+	m := &gitManager{
 		db:        db,
 		store:     st,
 		tables:    tablesOf(st),
 		publisher: pub,
 		locker:    locker,
 		searcher:  searcher,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m, nil
 }
 
 // publish emits a topic/payload pair via the optional [events.Publisher].
