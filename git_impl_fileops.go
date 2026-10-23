@@ -560,6 +560,9 @@ func (m *gitManager) Log(ctx context.Context, branchID string, filter LogFilter)
 				continue
 			}
 		}
+		if err := verifyCommitObject(c); err != nil {
+			return nil, fmt.Errorf("Log: %w", err)
+		}
 		out = append(out, commitToEntry(c))
 	}
 	return out, nil

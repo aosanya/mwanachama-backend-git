@@ -20,14 +20,22 @@ direct SQL write to `content` (or to `sha`) went unnoticed by every reader.
   weight.
 - Pinned by `integrity_test.go`, which amends a row by direct SQL (content,
   then the recorded `sha`) and sees the refusal.
+- `Log` recomputes each commit it returns when the row carries its raw
+  serialised object (`data`, written by `WriteFile`): the git commit hash over
+  those bytes must equal `sha`, and the message decoded from them must equal
+  the row's `message`. Either mismatch is the same `ErrContentTampered` (409).
+  Pinned by `integrity_test.go`, which amends a commit's `message`, then its
+  `data`, by direct SQL.
 
 ## What it does not cover
 
-- **Commits and trees are not recomputed.** A commit row stores its message,
-  author and tree reference, but not the exact serialised object (timezone,
-  committer, parent order as git wrote it), so its id cannot be rebuilt from
-  the row alone. Verifying the chain needs either the raw object stored or a
-  walk of the bare clone; not built.
+- **Commits without `data`, and trees, are not recomputed.** A commit indexed
+  from a push or a fetch carries no raw object, so its id cannot be rebuilt
+  from the row alone (timezone, committer and parent order as git wrote them
+  are not columns); verifying it needs the raw object stored or a walk of the
+  bare clone. Trees carry `data` on the `WriteFile` path too, but no read
+  returns a tree, so there is no read to hook; not built. Only the message is
+  compared against the decoded commit, not author, committer or tree.
 - **A coordinated rewrite of both `content` and `sha`** to a consistent pair
   passes. Recomputation detects accidental or careless edits and any edit
   that leaves the recorded hash alone; it cannot detect an attacker who also

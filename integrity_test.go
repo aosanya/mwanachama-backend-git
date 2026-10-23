@@ -80,3 +80,40 @@ func TestReadFileAcceptsBase64ContentWrittenThroughWriteFile(t *testing.T) {
 		t.Fatalf("base64 read: %v", err)
 	}
 }
+
+func TestLogRefusesACommitMessageAmendedByDirectSQL(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t)
+	branch := writeOneFile(t, m, "Candidate A: 412 votes", "")
+
+	if _, err := m.Log(ctx, branch.ID, LogFilter{}); err != nil {
+		t.Fatalf("untouched log: %v", err)
+	}
+
+	res := m.db.Exec("UPDATE "+m.tables.Commits+" SET message = ? WHERE data <> ''", "recount approved by council")
+	if res.Error != nil || res.RowsAffected == 0 {
+		t.Fatalf("tamper: %v rows=%d", res.Error, res.RowsAffected)
+	}
+
+	_, err := m.Log(ctx, branch.ID, LogFilter{})
+	if !errors.Is(err, ErrContentTampered) {
+		t.Fatalf("expected ErrContentTampered, got %v", err)
+	}
+}
+
+func TestLogRefusesARawCommitObjectAmendedByDirectSQL(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t)
+	branch := writeOneFile(t, m, "Candidate A: 412 votes", "")
+
+	forged := base64.StdEncoding.EncodeToString([]byte("tree 0000000000000000000000000000000000000000\n\nforged\n"))
+	res := m.db.Exec("UPDATE "+m.tables.Commits+" SET data = ? WHERE data <> ''", forged)
+	if res.Error != nil || res.RowsAffected == 0 {
+		t.Fatalf("tamper: %v rows=%d", res.Error, res.RowsAffected)
+	}
+
+	_, err := m.Log(ctx, branch.ID, LogFilter{})
+	if !errors.Is(err, ErrContentTampered) {
+		t.Fatalf("expected ErrContentTampered, got %v", err)
+	}
+}
