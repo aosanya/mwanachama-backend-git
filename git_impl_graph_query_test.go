@@ -288,10 +288,19 @@ func TestQueryGraph_EdgesOnlyBetweenReturnedNodes(t *testing.T) {
 // how it's connected via git_commit_parents.
 func neighborhoodTestNode(t *testing.T, m *gitManager, name string) models.Commit {
 	t.Helper()
-	row := models.Commit{SHA: name, Message: name, CreatedAt: models.NowRFC3339()}
+	var repoID string
+	if err := m.db.WithContext(context.Background()).Table(m.tables.Repositories).Limit(1).Pluck("id", &repoID).Error; err != nil {
+		t.Fatalf("fixture repository: %v", err)
+	}
+	row := models.Commit{RepositoryID: repoID, SHA: name, Message: name, CreatedAt: models.NowRFC3339()}
 	ensureID(&row)
 	if err := m.db.WithContext(context.Background()).Table(m.tables.Commits).Create(&row).Error; err != nil {
 		t.Fatalf("create node %q: %v", name, err)
+	}
+	if err := m.db.WithContext(context.Background()).Table(m.tables.Branches).
+		Where("repository_id = ? AND (head_commit_id = '' OR head_commit_id IS NULL)", repoID).
+		Update("head_commit_id", row.ID).Error; err != nil {
+		t.Fatalf("point fixture branch at %q: %v", name, err)
 	}
 	return row
 }

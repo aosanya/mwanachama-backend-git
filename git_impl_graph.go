@@ -35,11 +35,6 @@ const neighborhoodMaxNodes = 100
 
 // ── GetNeighborhood ───────────────────────────────────────────────────────────
 
-// GetNeighborhood returns the subgraph reachable from entityID within depth
-// hops, capped at [neighborhoodMaxNodes] nodes. The starting entity is always
-// included as the first node in the result.
-//
-// depth is clamped to [1, 3]. The branch must exist (verified before traversal).
 func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID string, depth int) (GraphResult, error) {
 	branch, err := m.GetBranch(ctx, branchID)
 	if err != nil {
@@ -56,7 +51,15 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: resolve entity: %w", entityID, err)
 	}
 
-	order, edges, err := m.traverseNeighborhood(ctx, resolvedID, depth)
+	allowed, err := m.nodesAtBranchHead(ctx, branch)
+	if err != nil {
+		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: scope: %w", entityID, err)
+	}
+	if !allowed[resolvedID] {
+		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: resolve entity: %w", entityID, ErrEntityNotFound)
+	}
+
+	order, edges, err := m.traverseNeighborhood(ctx, resolvedID, depth, allowed)
 	if err != nil {
 		return GraphResult{}, fmt.Errorf("GetNeighborhood %s: traverse: %w", entityID, err)
 	}
@@ -69,18 +72,7 @@ func (m *gitManager) GetNeighborhood(ctx context.Context, branchID, entityID str
 	return buildGraphResult(nodes, edges, neighborhoodMaxNodes), nil
 }
 
-// traverseNeighborhood performs a bounded breadth-first walk from startID,
-// following relationships in either direction, up to depth hops or
-// [neighborhoodMaxNodes] visited vertices, whichever comes first. Returns
-// vertex IDs in discovery order (startID first) and the deduplicated edge
-// set touching them.
-//
-// One [NeighborhoodEdges] query covers the ENTIRE frontier per
-// level (not one query per frontier vertex), so every frontier member's own
-// edges are always collected regardless of whether the node cap fills up
-// mid-round — the cap only gates whether a newly-discovered neighbor is
-// admitted into the visited set, never whether a query runs.
-func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, depth int) ([]string, []GraphEdge, error) {
+func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, depth int, allowed map[string]bool) ([]string, []GraphEdge, error) {
 	visited := map[string]bool{startID: true}
 	order := []string{startID}
 	seenEdges := map[string]bool{}
@@ -100,7 +92,7 @@ func (m *gitManager) traverseNeighborhood(ctx context.Context, startID string, d
 				edges = append(edges, GraphEdge{ID: key, Name: re.Name, FromID: re.FromID, ToID: re.ToID})
 			}
 			for _, neighborID := range [2]string{re.FromID, re.ToID} {
-				if neighborID == "" || visited[neighborID] || len(visited) >= neighborhoodMaxNodes {
+				if neighborID == "" || !allowed[neighborID] || visited[neighborID] || len(visited) >= neighborhoodMaxNodes {
 					continue
 				}
 				visited[neighborID] = true
