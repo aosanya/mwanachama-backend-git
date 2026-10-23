@@ -398,20 +398,17 @@ func (m *gitManager) ReadFile(ctx context.Context, branchID, path string) (model
 		return models.Blob{}, fmt.Errorf("ReadFile: %w", err)
 	}
 
-	// Fast path: content is already cached.
-	if blob.Content != "" {
-		return blob, nil
+	if blob.Content == "" {
+		content, encoding, loadErr := m.loadBlobContentFromBareClone(ctx, branch, blob)
+		if loadErr != nil {
+			return models.Blob{}, ErrBlobContentUnavailable
+		}
+		blob.Content = content
+		blob.Encoding = encoding
 	}
-
-	// Lazy path: blob was written as metadata-only (no content field).
-	// Hydrate from the local full clone FetchBranch made.
-	content, encoding, loadErr := m.loadBlobContentFromBareClone(ctx, branch, blob)
-	if loadErr != nil {
-		return models.Blob{}, ErrBlobContentUnavailable
+	if err := verifyBlobContent(blob); err != nil {
+		return models.Blob{}, fmt.Errorf("ReadFile: %w", err)
 	}
-
-	blob.Content = content
-	blob.Encoding = encoding
 	return blob, nil
 }
 

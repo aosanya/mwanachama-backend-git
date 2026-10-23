@@ -44,5 +44,6 @@ func Sentinels() map[string]error {
 		"ErrWorkflowRunIDRequired":        ErrWorkflowRunIDRequired,
 		"ErrInvalidRelationship":          ErrInvalidRelationship,
 		"ErrBlobContentUnavailable":       ErrBlobContentUnavailable,
+		"ErrContentTampered":              ErrContentTampered,
 	}
 }

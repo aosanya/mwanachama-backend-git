@@ -891,6 +891,7 @@
     "ErrEntityNotFound": 404,
     "ErrWorkflowRunIDRequired": 400,
     "ErrInvalidRelationship": 400,
-    "ErrBlobContentUnavailable": 400
+    "ErrBlobContentUnavailable": 400,
+    "ErrContentTampered": 409
   }
 }
