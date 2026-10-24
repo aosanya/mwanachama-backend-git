@@ -53,3 +53,4 @@ wire-protocol layer (v1 `Backend`, `storer.go`, `githttp.go`) since
 
 Full task breakdown and rationale: originally scoped in
 `/Users/tony/.claude/plans/kind-snacking-rose.md`.
+| G23 | 🧭 **Document store settings** (member app decisions 280, 281, 2026-10-22): an agency's repositories and tag patterns, declared through S64. | 2026-10-24 | aa6a99f (merged as b9b2b9c): `repositories` and `tag_patterns` declared as S64 settings in git.blueprint.json, resolved through the stored layers on every read (`DocumentStoreSettings`: `Repositories`, `TagPatterns`); `CreateTag` refuses a name matching no declared pattern (`ErrTagNameNotAllowed`, 400), unchanged with none; `settings_test.go`; store-settings.md. Open, on the design page: whether `repositories` gates InitRepo or listings; a stale override after a republish (S64, owner). Verified: build, vet, `go test ./...` green, gofmt clean (run d357a9). |
