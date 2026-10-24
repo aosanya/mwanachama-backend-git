@@ -22,6 +22,18 @@ func (m *gitManager) CreateTag(ctx context.Context, req CreateTagRequest) (model
 		return models.Tag{}, fmt.Errorf("CreateTag: %w", err)
 	}
 
+	patterns, err := m.TagPatterns(ctx)
+	if err != nil {
+		return models.Tag{}, fmt.Errorf("CreateTag: %w", err)
+	}
+	allowed, err := TagNameAllowed(patterns, req.Name)
+	if err != nil {
+		return models.Tag{}, fmt.Errorf("CreateTag: %w", err)
+	}
+	if !allowed {
+		return models.Tag{}, ErrTagNameNotAllowed
+	}
+
 	var count int64
 	if err := m.db.WithContext(ctx).Table(m.tables.Tags).
 		Where("repository_id = ? AND name = ? AND NOT deleted", repo.ID, req.Name).

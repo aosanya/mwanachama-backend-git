@@ -783,5 +783,19 @@
         }
       ]
     }
+  ],
+  "settings": [
+    {
+      "name": "repositories",
+      "type": "json",
+      "description": "The names of the agency's repositories, in the order the agency reads them. None by default.",
+      "default": []
+    },
+    {
+      "name": "tag_patterns",
+      "type": "json",
+      "description": "The patterns a tag name must match, in path.Match form. When none are declared any tag name is accepted.",
+      "default": []
+    }
   ]
 }

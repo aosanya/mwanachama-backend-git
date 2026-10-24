@@ -23,6 +23,7 @@ func Sentinels() map[string]error {
 		"ErrRepoAlreadyExists":            ErrRepoAlreadyExists,
 		"ErrBranchExists":                 ErrBranchExists,
 		"ErrTagAlreadyExists":             ErrTagAlreadyExists,
+		"ErrTagNameNotAllowed":            ErrTagNameNotAllowed,
 		"ErrKeywordAlreadyExists":         ErrKeywordAlreadyExists,
 		"ErrImportInProgress":             ErrImportInProgress,
 		"ErrMergeRequestNotOpen":          ErrMergeRequestNotOpen,

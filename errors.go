@@ -32,6 +32,8 @@ var ErrRepoNotInitialised = errors.New("repository not initialised")
 // entity with the given name already exists in the repository.
 var ErrTagAlreadyExists = errors.New("tag already exists")
 
+var ErrTagNameNotAllowed = errors.New("tag name matches no declared tag pattern")
+
 // ErrTagNotFound is returned by [GitManager.GetTag] and [GitManager.DeleteTag]
 // when no Tag entity with the given ID exists.
 var ErrTagNotFound = errors.New("tag not found")

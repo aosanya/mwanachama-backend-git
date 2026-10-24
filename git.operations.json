@@ -876,6 +876,7 @@
     "ErrRepoAlreadyExists": 409,
     "ErrBranchExists": 409,
     "ErrTagAlreadyExists": 409,
+    "ErrTagNameNotAllowed": 400,
     "ErrKeywordAlreadyExists": 409,
     "ErrImportInProgress": 409,
     "ErrMergeRequestNotOpen": 409,

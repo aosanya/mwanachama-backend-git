@@ -26,11 +26,13 @@ func TestTwoDomainsCoexist(t *testing.T) {
 	db := openSpecDB(t)
 	paths := examplePaths(t)
 
+	want := 0
 	for _, path := range paths {
 		s, err := LoadSpec(path)
 		if err != nil {
 			t.Fatalf("load %s: %v", path, err)
 		}
+		want += 15 + len(s.SettingsTables())
 		if err := spec.Migrate(db, s); err != nil {
 			t.Fatalf("migrate %s: %v", filepath.Base(path), err)
 		}
@@ -42,7 +44,6 @@ func TestTwoDomainsCoexist(t *testing.T) {
 	).Scan(&tables).Error; err != nil {
 		t.Fatalf("list tables: %v", err)
 	}
-	want := 15 * len(paths)
 	if len(tables) != want {
 		t.Fatalf("%d domains migrated %d tables, want %d — the domains are sharing a table", len(paths), len(tables), want)
 	}
