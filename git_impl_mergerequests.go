@@ -125,7 +125,7 @@ func (m *gitManager) ListMergeRequests(ctx context.Context, filter MergeRequestF
 
 // CompleteMergeRequest performs the merge and transitions the MR to "merged".
 // On failure transitions to "failed" and publishes [TopicMergeFailed].
-func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error) {
+func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID, mergedBy string) (models.MergeRequest, error) {
 	mr, err := m.GetMergeRequest(ctx, mrID)
 	if err != nil {
 		return models.MergeRequest{}, err
@@ -134,7 +134,11 @@ func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (mod
 		return models.MergeRequest{}, ErrMergeRequestNotOpen
 	}
 
-	mergedBranch, mergeErr := m.MergeBranch(ctx, mr.SourceBranchID)
+	if err := m.mayMerge(ctx, mergedBy, mr.RepositoryID, mr.TargetBranchID); err != nil {
+		return models.MergeRequest{}, fmt.Errorf("CompleteMergeRequest: %w", err)
+	}
+
+	mergedBranch, mergeErr := m.mergeBranch(ctx, mr.SourceBranchID)
 	if mergeErr != nil {
 		updated, _ := m.transitionMRStatus(ctx, mr.ID, models.MergeRequestStatusFailed, "", mergeErr.Error())
 		m.publish(ctx, TopicMergeFailed, MergeRequestFailedPayload{
@@ -151,6 +155,9 @@ func (m *gitManager) CompleteMergeRequest(ctx context.Context, mrID string) (mod
 	}
 
 	updated, err := m.transitionMRStatus(ctx, mr.ID, models.MergeRequestStatusMerged, mergedBranch.SHA, "")
+	if err == nil && mergedBy != "" {
+		updated, err = m.recordMergedBy(ctx, mr.ID, mergedBy)
+	}
 	if err != nil {
 		return mr, fmt.Errorf("CompleteMergeRequest: persist merged status: %w", err)
 	}

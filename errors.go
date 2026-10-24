@@ -126,3 +126,5 @@ var ErrWorkflowRunIDRequired = errors.New("workflow_run_id is required")
 var ErrEntityNotFound = errors.New("entity not found")
 
 var ErrFileTooLarge = errors.New("file exceeds the size limit")
+
+var ErrMergeNotPermitted = errors.New("merge not permitted")

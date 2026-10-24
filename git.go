@@ -131,7 +131,7 @@ type GitManager interface {
 	// [TopicMergeFailed].
 	// Returns [ErrMergeRequestNotFound] if no MR with that ID exists.
 	// Returns [ErrMergeRequestNotOpen] if the MR is not in "open" status.
-	CompleteMergeRequest(ctx context.Context, mrID string) (models.MergeRequest, error)
+	CompleteMergeRequest(ctx context.Context, mrID, mergedBy string) (models.MergeRequest, error)
 
 	// CloseMergeRequest transitions an open MR to "closed" without merging.
 	// Used to abandon an MR. No event is published.
@@ -432,6 +432,7 @@ type gitManager struct {
 	locker    RefLocker
 	searcher  BlobSearcher
 	maxFile   int64
+	merging   MergeGate
 }
 
 // NewGitManager constructs a [GitManager] reading and writing the fifteen

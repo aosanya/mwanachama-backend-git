@@ -12,6 +12,7 @@ type MergeRequest struct {
 	Status           string `json:"status"`
 	MergedCommitSHA  string `json:"merged_commit_sha,omitempty"`
 	AuthorName       string `json:"author_name,omitempty"`
+	MergedBy         string `json:"merged_by,omitempty"`
 	ErrorMessage     string `json:"error_message,omitempty"`
 	WorkflowRunID    string `json:"workflow_run_id,omitempty"`
 	CreatedAt        string `json:"created_at"`

@@ -307,6 +307,11 @@
           "from": "path",
           "as": "mrID",
           "description": "The merge request to complete."
+        },
+        {
+          "from": "caller",
+          "as": "merged_by",
+          "description": "Who is completing the merge, supplied by the mount. Never read from the request."
         }
       ],
       "returns": [
@@ -892,6 +897,7 @@
     "ErrWorkflowRunIDRequired": 400,
     "ErrInvalidRelationship": 400,
     "ErrBlobContentUnavailable": 400,
-    "ErrContentTampered": 409
+    "ErrContentTampered": 409,
+    "ErrMergeNotPermitted": 403
   }
 }

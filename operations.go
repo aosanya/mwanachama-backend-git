@@ -45,5 +45,6 @@ func Sentinels() map[string]error {
 		"ErrInvalidRelationship":          ErrInvalidRelationship,
 		"ErrBlobContentUnavailable":       ErrBlobContentUnavailable,
 		"ErrContentTampered":              ErrContentTampered,
+		"ErrMergeNotPermitted":            ErrMergeNotPermitted,
 	}
 }

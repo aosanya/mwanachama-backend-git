@@ -499,6 +499,11 @@
           "description": "The target branch's new tip once the merge succeeded. Empty until then."
         },
         {
+          "name": "merged_by",
+          "type": "string",
+          "description": "Who completed the merge, supplied by the mount from the caller. Empty until then, and empty for a merge no caller made."
+        },
+        {
           "name": "author_name",
           "type": "string",
           "description": "Who opened the request."

@@ -173,7 +173,7 @@ func TestMergeRequestLifecycle(t *testing.T) {
 		t.Fatalf("expected open status, got %q", mr.Status)
 	}
 
-	completed, err := m.CompleteMergeRequest(ctx, mr.ID)
+	completed, err := m.CompleteMergeRequest(ctx, mr.ID, "")
 	if err != nil {
 		t.Fatalf("CompleteMergeRequest: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestMergeRequestLifecycle(t *testing.T) {
 		t.Fatalf("expected merged_commit_sha cafebabe, got %q", completed.MergedCommitSHA)
 	}
 
-	if _, err := m.CompleteMergeRequest(ctx, mr.ID); !errors.Is(err, ErrMergeRequestNotOpen) {
+	if _, err := m.CompleteMergeRequest(ctx, mr.ID, ""); !errors.Is(err, ErrMergeRequestNotOpen) {
 		t.Fatalf("expected ErrMergeRequestNotOpen on re-complete, got %v", err)
 	}
 }
@@ -364,7 +364,7 @@ func TestRollbackByWorkflowRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMergeRequest: %v", err)
 	}
-	if _, err := m.CompleteMergeRequest(ctx, mr.ID); err != nil {
+	if _, err := m.CompleteMergeRequest(ctx, mr.ID, ""); err != nil {
 		t.Fatalf("CompleteMergeRequest: %v", err)
 	}
 

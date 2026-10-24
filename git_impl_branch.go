@@ -150,6 +150,13 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 // Returns [ErrMergeConcurrencyConflict] if a concurrent merge advanced the
 // default branch HEAD before this one could complete.
 func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (models.Branch, error) {
+	if err := m.mayMergeBranch(ctx, "", branchID); err != nil {
+		return models.Branch{}, fmt.Errorf("MergeBranch: %w", err)
+	}
+	return m.mergeBranch(ctx, branchID)
+}
+
+func (m *gitManager) mergeBranch(ctx context.Context, branchID string) (models.Branch, error) {
 	sourceBranch, err := m.GetBranch(ctx, branchID)
 	if err != nil {
 		return models.Branch{}, fmt.Errorf("MergeBranch: %w", err)
