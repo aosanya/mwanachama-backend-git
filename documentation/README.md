@@ -25,5 +25,5 @@ git-like object graph (branches/commits/trees/blobs/merge requests/tags/
 rollback/history), **not** a real `git` wire-protocol server. Built on
 [mwanachama-backend-shared](../mwanachama-backend-shared)'s entity-graph store instead
 of ArangoDB, and imported directly by
-[mwanachama-backend-api-gateway](../mwanachama-backend-api-gateway) — no gRPC, no
+mwanachama-backend-api-gateway — no gRPC, no
 sub-service shape.
