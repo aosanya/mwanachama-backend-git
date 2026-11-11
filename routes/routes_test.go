@@ -40,9 +40,6 @@ func patterns(rts []routes.Route, prefix string) []string {
 	return out
 }
 
-// The forty-three addresses this package answered before the route table was
-// declared. The conversion is only correct if the set is identical, so it is
-// written out rather than counted.
 var addresses = []string{
 	"DELETE /branches/{branchID}",
 	"DELETE /branches/{branchID}/files",
@@ -64,6 +61,7 @@ var addresses = []string{
 	"GET /merge-requests",
 	"GET /merge-requests/{mrID}",
 	"GET /repos",
+	"GET /repositories",
 	"GET /repos/{repoID}",
 	"GET /repos/{repoID}/branches",
 	"GET /repos/{repoID}/tags",

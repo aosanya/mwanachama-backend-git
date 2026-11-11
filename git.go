@@ -53,6 +53,8 @@ type GitManager interface {
 	// ListRepositories returns all Repository entities.
 	ListRepositories(ctx context.Context) ([]models.Repository, error)
 
+	ListRepositorySummaries(ctx context.Context) ([]models.RepositorySummary, error)
+
 	// GetRepository retrieves a Repository entity by its ID.
 	// Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 	GetRepository(ctx context.Context, repoID string) (models.Repository, error)

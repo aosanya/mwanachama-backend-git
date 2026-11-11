@@ -151,3 +151,29 @@ func TestAKeywordTreeIsNotSwallowedByTheWildcard(t *testing.T) {
 		t.Fatalf("GET /keywords/tree must reach the tree, not the {keywordID} wildcard; got %d: %s", code, body)
 	}
 }
+
+func TestTheRepositoryListAnswersEachRepositoryWithItsMainBranchID(t *testing.T) {
+	srv := serve(t)
+	call(t, srv, "POST", "/repos", `{"name":"widgets"}`)
+
+	code, body := call(t, srv, "GET", "/repositories", "")
+	if code != http.StatusOK {
+		t.Fatalf("list repositories: got %d: %s", code, body)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(body, &rows); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want one repository, got %s", body)
+	}
+	for _, key := range []string{"id", "name", "default_branch", "default_branch_id"} {
+		if v, _ := rows[0][key].(string); v == "" {
+			t.Errorf("%s missing from %s", key, body)
+		}
+	}
+	branchID := rows[0]["default_branch_id"].(string)
+	if code, body := call(t, srv, "GET", "/branches/"+branchID+"/directory", ""); code != http.StatusOK {
+		t.Errorf("default_branch_id must open the tree, got %d: %s", code, body)
+	}
+}

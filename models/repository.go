@@ -11,3 +11,10 @@ type Repository struct {
 	UpdatedAt     string `json:"updated_at"`
 	Deleted       bool   `json:"-"`
 }
+
+type RepositorySummary struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	DefaultBranch   string `json:"default_branch"`
+	DefaultBranchID string `json:"default_branch_id"`
+}

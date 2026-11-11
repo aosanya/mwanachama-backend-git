@@ -14,6 +14,7 @@ request to that method's parameters and renders what it returns.
 | --- | --- | --- | --- |
 | POST | `/repos` | InitRepo | 201 |
 | GET | `/repos` | ListRepositories, or GetRepositoryByName with `?name=` | 200 |
+| GET | `/repositories` | ListRepositorySummaries: id, name, default_branch and default_branch_id of every live repository | 200 |
 | GET | `/repos/{repoID}` | GetRepository | 200 |
 | DELETE | `/repos/{repoID}` | DeleteRepo | 204 |
 | POST | `/repos/{repoID}/purge` | PurgeRepo | 204 |

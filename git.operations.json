@@ -40,6 +40,19 @@
         }
       ]
     },
+    "list_repositories": {
+      "method": "GET",
+      "path": "/repositories",
+      "call": "ListRepositorySummaries",
+      "action": "git.repository.list",
+      "title": "List repositories",
+      "description": "Every repository of the catalog that has not been removed, each with its id, its name, the name of its default branch and that branch's id, so a caller can open the tree of the default branch.",
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
     "delete_repo": {
       "method": "DELETE",
       "path": "/repos/{repoID}",

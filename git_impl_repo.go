@@ -78,6 +78,39 @@ func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository,
 	return out, nil
 }
 
+func (m *gitManager) ListRepositorySummaries(ctx context.Context) ([]models.RepositorySummary, error) {
+	repos, err := m.ListRepositories(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ListRepositorySummaries: %w", err)
+	}
+	out := make([]models.RepositorySummary, 0, len(repos))
+	if len(repos) == 0 {
+		return out, nil
+	}
+	ids := make([]string, len(repos))
+	for i, r := range repos {
+		ids[i] = r.ID
+	}
+	var defaults []models.Branch
+	if err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id IN ? AND is_default AND NOT deleted", ids).Find(&defaults).Error; err != nil {
+		return nil, fmt.Errorf("ListRepositorySummaries: default branches: %w", err)
+	}
+	branchOf := make(map[string]string, len(defaults))
+	for _, b := range defaults {
+		branchOf[b.RepositoryID] = b.ID
+	}
+	for _, r := range repos {
+		out = append(out, models.RepositorySummary{
+			ID:              r.ID,
+			Name:            r.Name,
+			DefaultBranch:   r.DefaultBranch,
+			DefaultBranchID: branchOf[r.ID],
+		})
+	}
+	return out, nil
+}
+
 // GetRepository retrieves a Repository row by its ID.
 // Returns [ErrRepoNotInitialised] if no repository with that ID exists.
 func (m *gitManager) GetRepository(ctx context.Context, repoID string) (models.Repository, error) {
