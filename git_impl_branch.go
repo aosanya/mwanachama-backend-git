@@ -170,6 +170,14 @@ func (m *gitManager) mergeBranch(ctx context.Context, branchID string) (models.B
 		return mergeErr
 	})
 	if lockErr != nil {
+		var conflict *ErrMergeConflict
+		if errors.As(lockErr, &conflict) {
+			m.publish(ctx, TopicMergeConflict, MergeConflictPayload{
+				BranchID:         sourceBranch.ID,
+				ConflictingFiles: conflict.ConflictingFiles,
+				WorkflowRunID:    sourceBranch.WorkflowRunID,
+			})
+		}
 		return models.Branch{}, fmt.Errorf("MergeBranch: advance default head: %w", lockErr)
 	}
 
@@ -215,7 +223,16 @@ func (m *gitManager) mergeIntoDefault(ctx context.Context, source, expectedDefau
 		return models.Branch{}, err
 	}
 	merged, overlapping := mergeTrees(baseTree, oursTree, theirsTree)
-	_ = overlapping
+	resolved, conflicts, err := m.resolveOverlaps(ctx, baseTree, oursTree, theirsTree, overlapping)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	if len(conflicts) > 0 {
+		return models.Branch{}, &ErrMergeConflict{TaskID: source.Name, ConflictingFiles: conflicts}
+	}
+	if err := m.storeMergedBlobs(ctx, merged, resolved); err != nil {
+		return models.Branch{}, err
+	}
 
 	message := fmt.Sprintf("Merge branch '%s' into %s", source.Name, expectedDefault.Name)
 	mergeCommit, err := m.writeMergeCommit(ctx, source.RepositoryID, merged,
