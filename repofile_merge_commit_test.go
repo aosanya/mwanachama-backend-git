@@ -181,17 +181,27 @@ func TestMergeCommit_StaleExpectedDefaultReturnsConcurrencyConflict(t *testing.T
 	}
 }
 
-func TestMergeCommit_OverlappingEditsTakeTheSourceSide(t *testing.T) {
+func TestMergeCommit_OverlappingEditsReturnMergeConflictAndLeaveDefaultUntouched(t *testing.T) {
 	f := newMcFixture(t)
 	f.commit(t, f.main.ID, "shared.txt", "base")
 	source := f.branch(t, "source")
 	f.commit(t, f.main.ID, "shared.txt", "default edit")
 	f.commit(t, source.ID, "shared.txt", "source edit")
+	headBefore := f.reload(t, f.main.ID).HeadCommitID
 
-	if _, err := f.m.MergeBranch(context.Background(), source.ID); err != nil {
-		t.Fatalf("MergeBranch: %v", err)
+	_, err := f.m.MergeBranch(context.Background(), source.ID)
+
+	var conflict *ErrMergeConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("MergeBranch error = %v, want *ErrMergeConflict", err)
 	}
-	if got := f.content(t, f.main.ID, "shared.txt"); got != "source edit" {
-		t.Fatalf("shared.txt = %q, want the source side", got)
+	if !reflect.DeepEqual(conflict.ConflictingFiles, []string{"shared.txt"}) {
+		t.Fatalf("ConflictingFiles = %v, want [shared.txt]", conflict.ConflictingFiles)
+	}
+	if got := f.reload(t, f.main.ID).HeadCommitID; got != headBefore {
+		t.Fatalf("default head = %s, want unchanged %s", got, headBefore)
+	}
+	if got := f.content(t, f.main.ID, "shared.txt"); got != "default edit" {
+		t.Fatalf("shared.txt = %q, want default edit", got)
 	}
 }
