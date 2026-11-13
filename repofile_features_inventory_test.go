@@ -29,6 +29,7 @@ var repoFileFeatureInventory = map[string]string{
 	"ListBranchesFiltered": featuresRepoFile,
 	"DeleteBranch":         featuresRepoFile,
 	"MergeBranch":          featuresRepoFile,
+	"RebaseBranch":         featuresRepoFile,
 
 	"CreateMergeRequest":   featuresRepoFile,
 	"GetMergeRequest":      featuresRepoFile,

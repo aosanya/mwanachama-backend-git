@@ -121,6 +121,31 @@
         }
       ]
     },
+    "rebase_branch": {
+      "method": "POST",
+      "path": "/branches/{branchID}/rebase",
+      "call": "RebaseBranch",
+      "action": "git.branch.rebase",
+      "title": "Rebase branch",
+      "description": "Replay a branch's own commits on top of the default branch, or on the branch named in the body. A branch with nothing to replay is left as it is. Overlapping edits answer a merge conflict and leave the branch unchanged.",
+      "args": [
+        {
+          "from": "body",
+          "whole": true
+        },
+        {
+          "from": "path",
+          "as": "branchID",
+          "into": "BranchID",
+          "description": "The branch to rebase. The address decides this, not the body."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
     "get_branch": {
       "method": "GET",
       "path": "/branches/{branchID}",

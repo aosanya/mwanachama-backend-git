@@ -69,6 +69,7 @@ var addresses = []string{
 	"POST /branches/{branchID}/fetch",
 	"POST /branches/{branchID}/files",
 	"POST /branches/{branchID}/merge",
+	"POST /branches/{branchID}/rebase",
 	"POST /edges",
 	"POST /graph/query",
 	"POST /imports",

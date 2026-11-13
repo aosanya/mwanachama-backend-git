@@ -103,6 +103,7 @@ type GitManager interface {
 	// cannot be auto-resolved.
 	// Returns [ErrBranchNotFound] if no branch with that ID exists.
 	MergeBranch(ctx context.Context, branchID string) (models.Branch, error)
+	RebaseBranch(ctx context.Context, req RebaseBranchRequest) (models.Branch, error)
 
 	// ListBranchesFiltered returns Branch entities for the specified repository
 	// filtered by [BranchFilter]. When filter.WorkflowRunID is non-empty only
