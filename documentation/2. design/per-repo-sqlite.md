@@ -10,8 +10,8 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 | Built by G57 | Not part of this change |
 |--------------|-------------------------|
 | `OpenRepoFile` opens one SQLite file and returns a `RepoFile` with `Path` and `Close`. | The cache of open files. |
-| `Provision` creates the fifteen blueprint objects in the file. | Listing and registering repositories in the catalog. |
-| The file refuses a second repository row: `InitRepo` returns `ErrRepoAlreadyExists`, and soft-deleted rows count. | Creating and deleting a repository together with its catalog entry. |
+| `Provision` creates the fifteen blueprint objects in the file. | |
+| The file refuses a second repository row: `InitRepo` returns `ErrRepoAlreadyExists`, and soft-deleted rows count. | |
 | The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | Measuring many agents on one repository. |
 | The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup. |
 | | Mounting. |
@@ -29,6 +29,15 @@ Hub issue G60 builds decision 8.
 - The tests show a copied valid file refused, listed nowhere, opening after registration, and refused again once its entry is removed.
 
 Not built: nothing deletes the file when its entry is removed, and `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
+
+## Catalog entry (G59)
+
+Hub issue G59 builds decisions 7 and 12 on the module side: the entry (file
+name, size, last commit time), registering it in `InitRepo`, updating it on
+every commit, removing it in `DeleteRepo`, and listing repositories from the
+catalog. This is built. What is left is a catalog-backed implementation in
+wakala-api (G64) and the file name and size func (G57). See
+`3. implementation/repository-catalog.md`.
 
 ## Bounded file cache (G58)
 
