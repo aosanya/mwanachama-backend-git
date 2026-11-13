@@ -12,13 +12,15 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 | `OpenRepoFile` opens one SQLite file and returns a `RepoFile` with `Path` and `Close`. | The cache of open files. |
 | `Provision` creates the fifteen blueprint objects in the file. | |
 | The file refuses a second repository row: `InitRepo` returns `ErrRepoAlreadyExists`, and soft-deleted rows count. | |
-| The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | Measuring many agents on one repository. |
+| The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | |
 | The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup. |
 | | Mounting. |
 | Hub issue G65 covers every `GitManager` operation on SQLite files; see "Feature coverage on SQLite (G65)" below. Some of its tests are red on purpose. | |
 
 The Postgres blob searcher and the Postgres-only index in `Provision` still
 exist but are not on this path.
+
+Hub issue G62 measured many agents on one repository ([results](../4.%20qa/per-repo-sqlite-concurrency.md)) and found `MergeBranch` loses commits (bug G72).
 
 ## Catalog wins (G60)
 
@@ -95,6 +97,8 @@ someone else. This is the model Fossil uses.
 - **One writer per file.** SQLite allows a single writer per repository, so the
   busiest repository sets the write ceiling. Many agents on one repository
   should be measured before it is trusted.
+  Measured by G62: about 450 commits plus merges per second without `-race` on
+  the test machine, and no `SQLITE_BUSY` at 30 agents.
 - **No size limit.** One very large file holds that repository's writer while
   it commits, and the file grows with every version of it. The limit is a
   deliberate later change.
