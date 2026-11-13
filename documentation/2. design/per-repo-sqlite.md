@@ -201,7 +201,7 @@ Some tests fail on purpose because the code lacks the behaviour. They are expect
 | G67 | `MergeBranch` overwrites the default head instead of keeping both sides. | `Merge_DivergedBranchesKeepBothSides`, `Merge_TwoWritersBothLand`, `Merge_RequestDivergedFlowKeepsBothSides`, `Conflict_ParallelMergesLoseNoUpdate` |
 | G68 | Conflicts are never detected: `ErrMergeConflict` is never returned and `TopicMergeConflict` is never published. | `Conflict_SameLineEditReturnsMergeConflict`, `Conflict_NonOverlappingEditsMergeCleanly`, `Conflict_MergeRequestFailsAndPublishesFailure`, `Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed` |
 | G69 | There is no rebase operation. | `History_RebaseOperationExists` |
-| G71 | `Log` with a path filter returns unrelated commits. | `History_LogByPathAfterMerges` |
+| G71 | `Log` with a path filter returned unrelated commits. Fixed in commit 69df2ae, see [Log path filter](log-path-filter.md). | `History_LogByPathAfterMerges` |
 
 Found without a failing test:
 
