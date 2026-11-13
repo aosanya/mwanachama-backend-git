@@ -65,4 +65,4 @@ Tests that were red for G67 and pass now (all `TestRepoFileFeatures_`):
 - `Merge_TwoWritersBothLand`
 - `Conflict_ParallelMergesLoseNoUpdate`
 
-The G72 tests pass too: `TestRepoFileConcurrency_SecondMergeOfSiblingBranchKeepsFirstMergedCommit`, and the 10 and 30 agent run `TestRepoFileConcurrency_ManyAgentsMergeIntoOneRepositoryFile`, which is behind the build tag `g62defect`.
+The G72 tests pass too: `TestRepoFileConcurrency_SecondMergeOfSiblingBranchKeepsFirstMergedCommit`, and the 10 and 30 agent run `TestRepoFileConcurrency_ManyAgentsMergeIntoOneRepositoryFile`, and both run in plain `go test`, no tag.

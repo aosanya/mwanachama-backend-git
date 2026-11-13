@@ -20,7 +20,7 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 The Postgres blob searcher and the Postgres-only index in `Provision` still
 exist but are not on this path.
 
-Hub issue G62 measured many agents on one repository ([results](../4.%20qa/per-repo-sqlite-concurrency.md)) and found `MergeBranch` loses commits (bug G72). The true merge of G67 fixes it, see [How a merge works](merge.md).
+Hub issue G62 measured many agents on one repository ([results](../4.%20qa/per-repo-sqlite-concurrency.md)) and found `MergeBranch` lost commits (bug G72). G72 is fixed by the true merge of G67, see [How a merge works](merge.md), and the concurrency tests now pass in plain `go test`.
 
 ## Catalog wins (G60)
 
@@ -132,7 +132,7 @@ someone else. This is the model Fossil uses.
 | 1 | Each repository is stored in its own SQLite file, in one folder per agency. |
 | 2 | Repositories are queried with SQLite through the Go module. Postgres is not in the git path, so `sqlite_fdw` and a Postgres-protocol service are not needed. |
 | 3 | One server process owns all the files of an agency. |
-| 4 | Concurrent writers each work on their own branch and merge into the default branch. A merge that touches the same lines is refused with `ErrMergeConcurrencyConflict` and the agent resolves it. Branches, merge requests and the ref lock already exist. |
+| 4 | Concurrent writers each work on their own branch and merge into the default branch. A merge combines the changes when it can, and returns `ErrMergeConcurrencyConflict` only when the default head moved between reading and writing (outside the module's lock). Branches, merge requests and the ref lock already exist. |
 | 5 | A repository holds anything the agency produces: source, documents, reports. |
 | 6 | There is no file size limit for now. |
 | 7 | The list of repositories is catalog entries, one per repository, in a catalog instance of the agency. |
@@ -204,6 +204,7 @@ Some tests fail on purpose because the code lacks the behaviour. They are expect
 | G68 | Conflicts are never detected: `ErrMergeConflict` is never returned and `TopicMergeConflict` is never published. | `Conflict_SameLineEditReturnsMergeConflict`, `Conflict_NonOverlappingEditsMergeCleanly`, `Conflict_MergeRequestFailsAndPublishesFailure`, `Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed` |
 | G69 | There is no rebase operation. | `History_RebaseOperationExists` |
 | G71 | `Log` with a path filter returned unrelated commits. Fixed in commit 69df2ae, see [Log path filter](log-path-filter.md). | `History_LogByPathAfterMerges` |
+| G72 | `MergeBranch` moved the default head to the source head, so a second merge of a sibling branch dropped the first branch's commits and files; refused merges were 0. Fixed by the true merge, see [How a merge works](merge.md); the concurrency tests now run in plain `go test`. | `TestRepoFileConcurrency_SecondMergeOfSiblingBranchKeepsFirstMergedCommit`, `TestRepoFileConcurrency_ManyAgentsMergeIntoOneRepositoryFile` (now pass) |
 
 Found without a failing test:
 
