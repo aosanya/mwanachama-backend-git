@@ -435,6 +435,8 @@ type gitManager struct {
 	searcher  BlobSearcher
 	maxFile   int64
 	merging   MergeGate
+
+	singleRepository bool
 }
 
 // NewGitManager constructs a [GitManager] reading and writing the fifteen
