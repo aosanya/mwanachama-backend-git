@@ -103,8 +103,8 @@ someone else. This is the model Fossil uses.
 - **Persistent disk.** The files need a volume that outlives the pod, and the
   backup of that volume is ours (decision 13).
 - **Copies of identical content.** Decision 11 gives up the cross-repository
-  blob sharing that `CLAUDE.md` calls deliberate, so that note needs updating
-  when this is built.
+  blob sharing that `CLAUDE.md` calls deliberate. `CLAUDE.md` was updated by
+  hub issue G64.
 - **One process owns the files.** Two replicas writing the same file over a
   shared volume corrupt it, so routing by repository is needed before a second
   replica.

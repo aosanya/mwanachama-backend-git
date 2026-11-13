@@ -70,10 +70,11 @@ idempotency property `TestSmartHTTP_SecondPushIsIdempotentForUnchangedTree`
 guards.
 
 Worth keeping straight when touching any of this: **content-addressed reuse
-across repositories is fine and deliberate.** Identical SHA means identical
+across repositories is fine and deliberate in the shared-database manager.**
+Identical SHA means identical
 bytes, the way forks share objects on a real git host. It was briefly
 suspected as a bug and checked — there is no failure behind it, and
-`Commit`/`Tree`/`Blob` rows are not repository-scoped by design in the shared-database manager. A file opened with `OpenRepoFile` is the exception: it holds one repository and its own copy of every blob (decision 11 in `documentation/2. design/per-repo-sqlite.md`), is created by the same `Provision`, and is opened only through `OpenRepoFile`. **Not done as part of G6**: mounting `SmartHTTPHandler()`
+`Commit`/`Tree`/`Blob` rows are not repository-scoped by design there. That sharing holds only there. A repository stored in its own SQLite file (`OpenRepoFile`, `RepositoryFolder`, decision 11 in `documentation/2. design/per-repo-sqlite.md`) holds exactly one repository and its own copy of every blob, so nothing is shared across repositories in that path; it is created by the same `Provision` and opened only through `OpenRepoFile`. `wakala-api` mounts it with `GIT_REPOSITORY_FOLDER` (hub issue G64). The repository list is catalog entries (decision 7), and a file with no entry is refused (decision 8). **Not done as part of G6**: mounting `SmartHTTPHandler()`
 anywhere in `mwanachama-backend-api-gateway`'s own router — that's its own
 follow-up, not implied by "the wire protocol works," the same way
 `mwanachama-backend-accounting`'s ledger core and its gateway wiring
