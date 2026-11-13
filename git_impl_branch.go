@@ -135,20 +135,6 @@ func (m *gitManager) DeleteBranch(ctx context.Context, branchID string) error {
 	return nil
 }
 
-// MergeBranch merges the given branch into the repository's default branch by
-// forwarding the default branch's HEAD commit pointer to the source branch's
-// HEAD commit. Returns the updated default [models.Branch].
-//
-// The entire advance-head operation runs inside a [RefLocker] lock
-// so that two concurrent MergeBranch calls cannot produce a lost update. The
-// CAS guard in [advanceBranchHead] provides a second layer
-// of protection: if the default branch HEAD changed between the read and the
-// write, [ErrMergeConcurrencyConflict] is returned and the caller may retry.
-//
-// Returns [ErrBranchNotFound] if no branch with that ID exists.
-// Returns [ErrRepoNotInitialised] if no repository entity exists.
-// Returns [ErrMergeConcurrencyConflict] if a concurrent merge advanced the
-// default branch HEAD before this one could complete.
 func (m *gitManager) MergeBranch(ctx context.Context, branchID string) (models.Branch, error) {
 	if err := m.mayMergeBranch(ctx, "", branchID); err != nil {
 		return models.Branch{}, fmt.Errorf("MergeBranch: %w", err)
@@ -175,29 +161,20 @@ func (m *gitManager) mergeBranch(ctx context.Context, branchID string) (models.B
 
 	var updated models.Branch
 	lockErr := m.locker.WithMergeLock(ctx, func() error {
-		// Re-read the default branch inside the lock so we hold the freshest
-		// HeadCommitID as the CAS guard. This ensures two sequential merges
-		// both succeed; the CAS only fires if the row was modified by an
-		// out-of-band write (e.g. another service instance).
 		currentDefault, readErr := m.defaultBranch(ctx, repo.ID)
 		if readErr != nil {
 			return fmt.Errorf("re-read default branch: %w", readErr)
 		}
-		var advErr error
-		updated, advErr = m.advanceBranchHead(ctx, currentDefault.ID, sourceBranch.HeadCommitID, currentDefault.HeadCommitID)
-		return advErr
+		var mergeErr error
+		updated, mergeErr = m.mergeIntoDefault(ctx, sourceBranch, currentDefault)
+		return mergeErr
 	})
 	if lockErr != nil {
 		return models.Branch{}, fmt.Errorf("MergeBranch: advance default head: %w", lockErr)
 	}
 
-	// GIT-022a: Replicate branch-scoped documentation edges (tagged_with,
-	// references) from source branch blobs to the default branch.
 	m.replicateDocEdges(ctx, sourceBranch.ID, defaultBranchEntity.ID, sourceBranch.HeadCommitID)
 
-	// FEAT-20260602-001: emit TopicBranchMerged so the closure aggregator can
-	// observe the merge. workflow_run_id is read off the source branch — the
-	// originating WorkflowRun is the run that produced the branch's commits.
 	m.publish(ctx, TopicBranchMerged, BranchMergedPayload{
 		BranchID:      sourceBranch.ID,
 		RepoID:        repo.ID,
@@ -205,6 +182,65 @@ func (m *gitManager) mergeBranch(ctx context.Context, branchID string) (models.B
 	})
 
 	return updated, nil
+}
+
+func (m *gitManager) mergeIntoDefault(ctx context.Context, source, expectedDefault models.Branch) (models.Branch, error) {
+	if expectedDefault.HeadCommitID == source.HeadCommitID {
+		return expectedDefault, nil
+	}
+	if expectedDefault.HeadCommitID == "" {
+		return m.advanceBranchHead(ctx, expectedDefault.ID, source.HeadCommitID, expectedDefault.HeadCommitID)
+	}
+	base, err := m.mergeBase(ctx, expectedDefault.HeadCommitID, source.HeadCommitID)
+	if err != nil {
+		return models.Branch{}, fmt.Errorf("merge base: %w", err)
+	}
+	if base == source.HeadCommitID {
+		return expectedDefault, nil
+	}
+	if base == expectedDefault.HeadCommitID {
+		return m.advanceBranchHead(ctx, expectedDefault.ID, source.HeadCommitID, expectedDefault.HeadCommitID)
+	}
+
+	baseTree, err := m.mergeTreeAt(ctx, base)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	oursTree, err := m.mergeTreeAt(ctx, expectedDefault.HeadCommitID)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	theirsTree, err := m.mergeTreeAt(ctx, source.HeadCommitID)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	merged, overlapping := mergeTrees(baseTree, oursTree, theirsTree)
+	_ = overlapping
+
+	message := fmt.Sprintf("Merge branch '%s' into %s", source.Name, expectedDefault.Name)
+	mergeCommit, err := m.writeMergeCommit(ctx, source.RepositoryID, merged,
+		[]string{expectedDefault.HeadCommitID, source.HeadCommitID}, message)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	return m.advanceBranchHead(ctx, expectedDefault.ID, mergeCommit.ID, expectedDefault.HeadCommitID)
+}
+
+func (m *gitManager) mergeTreeAt(ctx context.Context, commitID string) (mergeTree, error) {
+	tree := mergeTree{}
+	if commitID == "" {
+		return tree, nil
+	}
+	blobs, err := m.allBlobsAtCommit(ctx, commitID)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range blobs {
+		if b.Path != "" && b.SHA != "" {
+			tree[b.Path] = mergeEntry{BlobID: b.ID, SHA: b.SHA}
+		}
+	}
+	return tree, nil
 }
 
 // ListBranchesFiltered returns Branch rows for the specified repository
