@@ -13,7 +13,7 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 | `Provision` creates the fifteen blueprint objects in the file. | |
 | The file refuses a second repository row: `InitRepo` returns `ErrRepoAlreadyExists`, and soft-deleted rows count. | |
 | The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | |
-| The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup. |
+| The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup (built by G63, see "Nightly backup (G63)" below). |
 | | Mounting. |
 | Hub issue G65 covers every `GitManager` operation on SQLite files; see "Feature coverage on SQLite (G65)" below. Some of its tests are red on purpose. | |
 
@@ -63,6 +63,62 @@ Hub issue G58 keeps the number of open repository files bounded, so hundreds of 
 - `Open()` reports the number of open files. `Close()` waits for the files in use, closes all of them, and every later call returns `ErrRepoFileCacheClosed`.
 - `RepoFiles` (`repofiles.go`) is this cache of `*RepoFile` behind the G60 registration guard. `NewRepoFiles(folder, max, registered, open)` is where the caller chooses the maximum, which must be at least 1. `With(ctx, fileName, use)`, `Open()` and `Close()` mirror the cache. The file name check and the catalog check run on every call, before the cache is asked, so an unregistered file never takes a slot.
 - The tests (`repofilecache_test.go`, `repofiles_test.go`) register eight files with a maximum of three. They show the data intact after eviction and reopen, and the open files never above three.
+
+## Nightly backup (G63)
+
+Hub issue G63 builds decision 13: the folder of repository files is copied to a second volume by a command that a nightly job runs. The code is `repofile_backup.go` and `cmd/repobackup/main.go`; the cluster side is in `mwanachama-deployment/documentation/3. implementation/git-backup.md`.
+
+**Why `VACUUM INTO`.** `BackupRepoFile` opens the source file and runs `VACUUM INTO` a temporary file beside the target, then renames it over the target. The result is one consistent snapshot of one file. Nothing copies the `-journal` file by hand, and nothing depends on a file system snapshot. It works with the pure-Go SQLite driver the module already uses, with no cgo and no `sqlite3` binary in the image. The rename means the previous night's copy is replaced whole or not at all, so a run that dies midway leaves the old copy.
+
+**What a commit sees.** The files use the rollback journal (not WAL). While `VACUUM INTO` reads a file it holds a read lock, so a commit that arrives during the copy waits (the connection's busy timeout is 10000 ms) and lands after it. The copy is a snapshot taken before that commit, never a torn mix. A commit that waits longer than the busy timeout fails with a busy error. Up to a day of work can still be lost, because the copy is nightly (decision 13).
+
+**The status file.** After each run `BackupRepositoryFolder` writes `backup-status.json` into the backup folder, through a temporary file and a rename, so a reader never sees half of it.
+
+| Field | Meaning |
+|-------|---------|
+| `last_attempt_at` | When this run started (UTC). |
+| `last_success_at` | When the last run succeeded. A failed run keeps the value from the earlier file, so it still names the last good night. It is the zero time before any run has succeeded. |
+| `succeeded` | Whether every file was copied in this run. |
+| `error` | The failures of this run, joined with `; `. Absent when `succeeded` is true. |
+| `files` | One entry per file copied in this run: `name` and `bytes` of the copy. |
+
+A failure on one file does not stop the others: the good files are still copied, `succeeded` is false and the command exits 1.
+
+**The command.** `cmd/repobackup` reads two environment variables and prints the status JSON on standard output.
+
+| Variable | Meaning |
+|----------|---------|
+| `REPO_FOLDER` | The folder of repository files to copy from. Only read. |
+| `BACKUP_FOLDER` | The folder to copy into. Created when missing. |
+
+It exits 2 when either is empty, 1 when the run failed, and 0 when every file was copied. The JSON is printed in both the failed and the successful case, so a job's log always carries it.
+
+**Restore.**
+
+1. Stop the process that owns the files. A second process opening the same file corrupts it (decision 3), so the owner must not be running while a file is replaced.
+2. Copy `<name>.db` from the backup volume into the repository folder, replacing the damaged file. Copy only the `.db` file; there is no journal to bring.
+3. Start the process.
+
+The catalog entry decides whether the module opens the restored file (decision 8). A file whose entry was removed after the night it was copied is ignored until it is registered again.
+
+**What the tests show** (`repofile_backup_test.go`, seven tests):
+
+- A restored copy opens with `OpenRepoFile` and shows the history up to the moment of the copy.
+- Every `.db` file in the folder is copied.
+- A copy taken while a writer keeps committing is whole: it opens and holds a consistent history, not a torn one.
+- The status file records a successful run with the file names and sizes.
+- Reading the status of a folder never backed up gives the zero value, not an error.
+- A failed run keeps the last success time and still copies the good files.
+- Files without the `.db` extension are not copied.
+
+**Limits.**
+
+- It copies every regular `.db` file directly in the folder, including files with no catalog entry. Decision 8 ignores such files on open, but the backup does not.
+- Only files directly in the folder. Subfolders and other extensions are skipped.
+- The copy is on the same cluster as the original: a separate volume, not another provider. Losing the cluster or the account loses both.
+- No retention and no history of nights. Each night replaces the last copy of each file, so a corruption that is copied tonight replaces the good copy of yesterday.
+- A repository deleted from the folder keeps its last copy on the backup volume. Nothing prunes it.
+- Nothing watches the status file. The owner reads `last_success_at` by hand (see the deployment page).
 
 ## Why
 
