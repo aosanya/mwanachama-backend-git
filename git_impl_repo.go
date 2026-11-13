@@ -69,6 +69,10 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 		return models.Repository{}, fmt.Errorf("InitRepo: create default branch: %w", err)
 	}
 
+	if err := m.registerInCatalog(ctx, row); err != nil {
+		return models.Repository{}, fmt.Errorf("InitRepo: register in catalog: %w", err)
+	}
+
 	repo := row
 	m.publish(ctx, TopicRepoCreated, RepoCreatedPayload{RepoID: repo.ID, Name: req.Name})
 	return repo, nil
@@ -170,6 +174,9 @@ func (m *gitManager) DeleteRepo(ctx context.Context, repoID string) error {
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("id = ?", repo.ID).Update("deleted", true).Error; err != nil {
 		return fmt.Errorf("DeleteRepo: delete repo: %w", err)
+	}
+	if err := m.removeFromCatalog(ctx, repo.ID); err != nil {
+		return fmt.Errorf("DeleteRepo: remove from catalog: %w", err)
 	}
 	return nil
 }

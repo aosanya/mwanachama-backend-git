@@ -436,6 +436,9 @@ type gitManager struct {
 	maxFile   int64
 	merging   MergeGate
 
+	catalog        RepositoryCatalog
+	repositoryFile RepositoryFile
+
 	singleRepository bool
 }
 

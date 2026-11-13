@@ -314,5 +314,10 @@ func (m *gitManager) advanceBranchHead(ctx context.Context, branchID, newCommitI
 		return models.Branch{}, ErrMergeConcurrencyConflict
 	}
 
-	return m.GetBranch(ctx, branchID)
+	branch, err := m.GetBranch(ctx, branchID)
+	if err != nil {
+		return models.Branch{}, err
+	}
+	m.recordCommitInCatalog(ctx, branch.RepositoryID, commitRow)
+	return branch, nil
 }
