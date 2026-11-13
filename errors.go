@@ -130,3 +130,5 @@ var ErrEntityNotFound = errors.New("entity not found")
 var ErrFileTooLarge = errors.New("file exceeds the size limit")
 
 var ErrMergeNotPermitted = errors.New("merge not permitted")
+
+var ErrRepositoryNotRegistered = errors.New("repository file has no catalog entry")
