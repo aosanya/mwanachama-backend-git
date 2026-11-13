@@ -155,8 +155,9 @@ How a merge keeps both sides, which decision 4 relies on: [How a merge works](me
 - **One writer per file.** SQLite allows a single writer per repository, so the
   busiest repository sets the write ceiling. Many agents on one repository
   should be measured before it is trusted.
-  Measured by G62: about 450 commits plus merges per second without `-race` on
-  the test machine, and no `SQLITE_BUSY` at 30 agents.
+  Measured by G62 and re-measured after G72: a median of 347 (10 agents) and 247
+  (30 agents) commits plus merges per second without `-race` on the test
+  machine, and no `SQLITE_BUSY` at 30 agents.
 - **No size limit.** One very large file holds that repository's writer while
   it commits, and the file grows with every version of it. The limit is a
   deliberate later change.
