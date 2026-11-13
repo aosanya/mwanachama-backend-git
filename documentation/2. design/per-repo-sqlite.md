@@ -1,7 +1,23 @@
 # One SQLite file per repository
 
 Decided in a question-and-answer session on 2026-11-13, for activating git in
-the SWE hub (`projects/hub-steward-swe`). Nothing here is built yet.
+the SWE hub (`projects/hub-steward-swe`). Status is below.
+
+## Status
+
+Hub issue G57 builds the open path: decisions 1, 2 and 11.
+
+| Built by G57 | Not part of this change |
+|--------------|-------------------------|
+| `OpenRepoFile` opens one SQLite file and returns a `RepoFile` with `Path` and `Close`. | The cache of open files. |
+| `Provision` creates the fifteen blueprint objects in the file. | Listing and registering repositories in the catalog. |
+| The file refuses a second repository row: `InitRepo` returns `ErrRepoAlreadyExists`, and soft-deleted rows count. | Creating and deleting a repository together with its catalog entry. |
+| The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | Measuring many agents on one repository. |
+| The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup. |
+| | Mounting. |
+
+The Postgres blob searcher and the Postgres-only index in `Provision` still
+exist but are not on this path.
 
 ## Why
 

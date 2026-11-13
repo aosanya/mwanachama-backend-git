@@ -73,7 +73,7 @@ Worth keeping straight when touching any of this: **content-addressed reuse
 across repositories is fine and deliberate.** Identical SHA means identical
 bytes, the way forks share objects on a real git host. It was briefly
 suspected as a bug and checked — there is no failure behind it, and
-`Commit`/`Tree`/`Blob` rows are not repository-scoped by design. **Not done as part of G6**: mounting `SmartHTTPHandler()`
+`Commit`/`Tree`/`Blob` rows are not repository-scoped by design in the shared-database manager. A file opened with `OpenRepoFile` is the exception: it holds one repository and its own copy of every blob (decision 11 in `documentation/2. design/per-repo-sqlite.md`), is created by the same `Provision`, and is opened only through `OpenRepoFile`. **Not done as part of G6**: mounting `SmartHTTPHandler()`
 anywhere in `mwanachama-backend-api-gateway`'s own router — that's its own
 follow-up, not implied by "the wire protocol works," the same way
 `mwanachama-backend-accounting`'s ledger core and its gateway wiring
