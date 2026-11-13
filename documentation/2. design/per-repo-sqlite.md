@@ -30,6 +30,18 @@ Hub issue G60 builds decision 8.
 
 Not built: nothing deletes the file when its entry is removed, and `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
 
+## Bounded file cache (G58)
+
+Hub issue G58 keeps the number of open repository files bounded, so hundreds of registered repositories do not hold hundreds of open files.
+
+- `RepoFileCache` (`repofilecache.go`) is keyed by file path. `NewRepoFileCache(max, open, closeHandle)` takes the maximum number of open files from its caller and refuses a maximum below 1.
+- `With(path, use)` opens the file on demand and keeps a recency list. When the cache already holds the maximum and a new file is wanted, it closes the least recently used idle file first and only then opens the new one, so the open files never exceed the maximum.
+- A file in use is never closed. When every slot is in use, the caller waits until one is released.
+- A closed file is reopened on demand the next time it is used, so eviction is invisible to callers apart from the reopen.
+- `Open()` reports the number of open files. `Close()` waits for the files in use, closes all of them, and every later call returns `ErrRepoFileCacheClosed`.
+- `RepoFiles` (`repofiles.go`) is this cache of `*RepoFile` behind the G60 registration guard. `NewRepoFiles(folder, max, registered, open)` is where the caller chooses the maximum, which must be at least 1. `With(ctx, fileName, use)`, `Open()` and `Close()` mirror the cache. The file name check and the catalog check run on every call, before the cache is asked, so an unregistered file never takes a slot.
+- The tests (`repofilecache_test.go`, `repofiles_test.go`) register eight files with a maximum of three. They show the data intact after eviction and reopen, and the open files never above three.
+
 ## Why
 
 A repository is one `.db` file that can be copied, backed up or handed to
@@ -57,7 +69,9 @@ someone else. This is the model Fossil uses.
 
 - **Cross-repository queries are gone.** Keyword search and graph query run
   inside one repository. A question across repositories has to ask each file.
-- **Open files.** Hundreds of repositories need a bounded cache of open files.
+- **Open files.** The cache of open files (G58) bounds them. What is left is
+  that a request can wait when every slot is in use, and that the first use
+  after an eviction pays a reopen.
 - **One writer per file.** SQLite allows a single writer per repository, so the
   busiest repository sets the write ceiling. Many agents on one repository
   should be measured before it is trusted.
