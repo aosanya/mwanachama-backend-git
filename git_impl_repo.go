@@ -78,8 +78,10 @@ func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (model
 	return repo, nil
 }
 
-// ListRepositories returns all Repository rows.
 func (m *gitManager) ListRepositories(ctx context.Context) ([]models.Repository, error) {
+	if m.catalog != nil {
+		return m.listCataloguedRepositories(ctx)
+	}
 	var rows []models.Repository
 	if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
 		Where("NOT deleted").Limit(maxListPage).Find(&rows).Error; err != nil {
