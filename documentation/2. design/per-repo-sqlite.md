@@ -15,6 +15,7 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 | The connection waits up to 10000 ms when the file is busy, uses one connection, and keeps the rollback journal (not WAL), so a copy of the lone `.db` file is whole. | Measuring many agents on one repository. |
 | The module imports no Postgres driver, guarded by `TestGitPathHasNoPostgresDriver`. | The nightly backup. |
 | | Mounting. |
+| Hub issue G65 covers every `GitManager` operation on SQLite files; see "Feature coverage on SQLite (G65)" below. Some of its tests are red on purpose. | |
 
 The Postgres blob searcher and the Postgres-only index in `Provision` still
 exist but are not on this path.
@@ -112,3 +113,40 @@ someone else. This is the model Fossil uses.
 ## Not decided
 
 Nothing open. A shorter backup interval is a later change if a day proves too long.
+
+## Feature coverage on SQLite (G65)
+
+Hub issue G65 exercises every `GitManager` operation through `OpenRepoFile`, on real SQLite files in `t.TempDir()`. No Postgres is involved. `repofile_features_inventory_test.go` enumerates the operations through reflection (51 of them), so a new operation fails the build of the suite until a test covers it.
+
+| File | What it covers | Tests |
+|------|----------------|-------|
+| `repofile_features_helpers_test.go` | Shared helpers. | 0 |
+| `repofile_features_inventory_test.go` | The reflection inventory of the 51 operations. | 1 |
+| `repofile_features_repo_test.go` | Repository, branch, tag and merge request. | 34 |
+| `repofile_features_content_test.go` | Files, log, diff, rollback, keywords, graph, edges and blob search. | 20 |
+| `repofile_features_transport_test.go` | Import, fetch, `IndexPushedBranch` and `SmartHTTPHandler` with a real `git push` and `git clone`. | 19 |
+| `repofile_features_copy_test.go` | Copy the file to a new folder: everything still reads. | 1 |
+| `repofile_features_merge_test.go` | Merging branches. | 9 |
+| `repofile_features_conflict_test.go` | Conflicting edits. | 5 |
+| `repofile_features_history_test.go` | Log, diff order and rebase. | 7 |
+
+Run it with `go test -run 'RepoFileFeatures_' .`.
+
+### Findings
+
+Some tests fail on purpose because the code lacks the behaviour. They are expected red until the filed hub issues are fixed.
+
+| Issue | Finding | Failing tests |
+|-------|---------|---------------|
+| G67 | `MergeBranch` overwrites the default head instead of keeping both sides. | `Merge_DivergedBranchesKeepBothSides`, `Merge_TwoWritersBothLand`, `Merge_RequestDivergedFlowKeepsBothSides`, `Conflict_ParallelMergesLoseNoUpdate` |
+| G68 | Conflicts are never detected: `ErrMergeConflict` is never returned and `TopicMergeConflict` is never published. | `Conflict_SameLineEditReturnsMergeConflict`, `Conflict_NonOverlappingEditsMergeCleanly`, `Conflict_MergeRequestFailsAndPublishesFailure`, `Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed` |
+| G69 | There is no rebase operation. | `History_RebaseOperationExists` |
+| G70 | The order of `Diff` results is random. | `History_DiffOrderIsDeterministicAndSortedByPath` |
+| G71 | `Log` with a path filter returns unrelated commits. | `History_LogByPathAfterMerges` |
+
+Found without a failing test:
+
+- `ErrMergeConcurrencyConflict` cannot be reached by a test, because `mergeBranch` re-reads the default head inside the lock. The compare-and-swap only guards writers outside the module.
+- `DeleteFile` writes an empty blob rather than removing the path. This is the documented design.
+- In single-repository mode a deleted repository still blocks `InitRepo`, because `ErrRepoAlreadyExists` counts archived rows.
+- `PurgeRepo` is the same as `DeleteRepo`: a soft delete.
