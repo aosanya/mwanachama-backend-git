@@ -30,6 +30,16 @@ Hub issue G60 builds decision 8.
 
 Not built: nothing deletes the file when its entry is removed, and `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
 
+## Create and delete (G61)
+
+Hub issue G61 builds decisions 7 and 8 together: a repository is a file plus a catalog entry, and one call makes or removes both.
+
+- `RepositoryFolder.Create` opens a new `.db` file, runs `InitRepo` in it, then registers the entry. A failure before the entry is written removes the file, so no file is left without an entry.
+- `RepositoryFolder.Delete` (and `Purge`) removes the file first, then the entry. A failure keeps the entry, so the repository is still listed and a second `Delete` finishes the job.
+- A stray file that a failed cleanup could not remove has no entry, so decision 8 ignores it.
+
+Built; the order of steps, the failure table and the tests are in `3. implementation/repository-folder.md`.
+
 ## Catalog entry (G59)
 
 Hub issue G59 builds decisions 7 and 12 on the module side: the entry (file
@@ -88,7 +98,8 @@ someone else. This is the model Fossil uses.
   it commits, and the file grows with every version of it. The limit is a
   deliberate later change.
 - **Two-step delete.** Removing a repository means removing the file and its
-  catalog entry. The module refuses a file with no entry.
+  catalog entry. `RepositoryFolder.Delete` does both in one call (G61). The
+  module refuses a file with no entry.
 - **Persistent disk.** The files need a volume that outlives the pod, and the
   backup of that volume is ours (decision 13).
 - **Copies of identical content.** Decision 11 gives up the cross-repository
