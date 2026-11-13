@@ -20,7 +20,7 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 The Postgres blob searcher and the Postgres-only index in `Provision` still
 exist but are not on this path.
 
-Hub issue G62 measured many agents on one repository ([results](../4.%20qa/per-repo-sqlite-concurrency.md)) and found `MergeBranch` loses commits (bug G72).
+Hub issue G62 measured many agents on one repository ([results](../4.%20qa/per-repo-sqlite-concurrency.md)) and found `MergeBranch` loses commits (bug G72). The true merge of G67 fixes it, see [How a merge works](merge.md).
 
 ## Catalog wins (G60)
 
@@ -143,6 +143,8 @@ someone else. This is the model Fossil uses.
 | 12 | A repository's catalog entry carries the file name, the file size in bytes and the time of the last commit, and nothing else. |
 | 13 | The folder of repository files is copied nightly to other storage. A file is copied only while no commit is running on it, so every copy is whole. Up to a day of recent work may be lost. |
 
+How a merge keeps both sides, which decision 4 relies on: [How a merge works](merge.md).
+
 ## What this costs
 
 - **Cross-repository queries are gone.** Keyword search and graph query run
@@ -198,14 +200,14 @@ Some tests fail on purpose because the code lacks the behaviour. They are expect
 
 | Issue | Finding | Failing tests |
 |-------|---------|---------------|
-| G67 | `MergeBranch` overwrites the default head instead of keeping both sides. | `Merge_DivergedBranchesKeepBothSides`, `Merge_TwoWritersBothLand`, `Merge_RequestDivergedFlowKeepsBothSides`, `Conflict_ParallelMergesLoseNoUpdate` |
+| G67 | `MergeBranch` overwrote the default head instead of keeping both sides. Fixed by the true merge, see [How a merge works](merge.md). | `Merge_DivergedBranchesKeepBothSides`, `Merge_TwoWritersBothLand`, `Merge_RequestDivergedFlowKeepsBothSides`, `Conflict_ParallelMergesLoseNoUpdate` (now pass) |
 | G68 | Conflicts are never detected: `ErrMergeConflict` is never returned and `TopicMergeConflict` is never published. | `Conflict_SameLineEditReturnsMergeConflict`, `Conflict_NonOverlappingEditsMergeCleanly`, `Conflict_MergeRequestFailsAndPublishesFailure`, `Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed` |
 | G69 | There is no rebase operation. | `History_RebaseOperationExists` |
 | G71 | `Log` with a path filter returned unrelated commits. Fixed in commit 69df2ae, see [Log path filter](log-path-filter.md). | `History_LogByPathAfterMerges` |
 
 Found without a failing test:
 
-- `ErrMergeConcurrencyConflict` cannot be reached by a test, because `mergeBranch` re-reads the default head inside the lock. The compare-and-swap only guards writers outside the module.
+- `mergeIntoDefault` takes the default head that was read before the merge, and the compare-and-swap checks against it. `TestMergeCommit_StaleExpectedDefaultReturnsConcurrencyConflict` reaches `ErrMergeConcurrencyConflict` by passing a stale head. Inside the lock the head cannot move, so only a writer outside the module can cause it in practice. See [How a merge works](merge.md).
 - `DeleteFile` writes an empty blob rather than removing the path. This is the documented design.
 - In single-repository mode a deleted repository still blocks `InitRepo`, because `ErrRepoAlreadyExists` counts archived rows.
 - `PurgeRepo` is the same as `DeleteRepo`: a soft delete.
