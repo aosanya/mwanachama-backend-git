@@ -1,5 +1,3 @@
-//go:build g62defect
-
 package mwanachamagit
 
 import (
