@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -555,7 +556,6 @@ func (m *gitManager) Log(ctx context.Context, branchID string, filter LogFilter)
 	out := make([]CommitEntry, 0, len(commits))
 	for _, c := range commits {
 		if filter.Path != "" {
-			// Check if this commit touched the requested path.
 			if !m.commitTouchesPath(ctx, c.ID, filter.Path) {
 				continue
 			}
@@ -636,10 +636,44 @@ func (m *gitManager) walkCommitChain(ctx context.Context, startCommitID string, 
 	return out, nil
 }
 
-// commitTouchesPath reports whether the commit's tree contains a blob at path.
+type pathState struct {
+	sha     string
+	present bool
+}
+
+func (m *gitManager) pathStateAt(ctx context.Context, commitID, path string) (pathState, error) {
+	b, err := m.findBlobAtCommit(ctx, commitID, path)
+	if errors.Is(err, ErrFileNotFound) {
+		return pathState{}, nil
+	}
+	if err != nil {
+		return pathState{}, err
+	}
+	return pathState{sha: b.SHA, present: true}, nil
+}
+
 func (m *gitManager) commitTouchesPath(ctx context.Context, commitID, path string) bool {
-	_, err := m.findBlobAtCommit(ctx, commitID, path)
-	return err == nil
+	own, err := m.pathStateAt(ctx, commitID, path)
+	if err != nil {
+		return true
+	}
+	parentIDs, err := CommitParentIDs(m.db.WithContext(ctx), m.tables, commitID)
+	if err != nil {
+		return true
+	}
+	if len(parentIDs) == 0 {
+		return own.present
+	}
+	for _, parentID := range parentIDs {
+		parent, err := m.pathStateAt(ctx, parentID, path)
+		if err != nil {
+			return true
+		}
+		if parent == own {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveRef resolves a branchID or commitID to a commit row ID.

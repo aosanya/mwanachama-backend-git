@@ -90,15 +90,12 @@ func TestWriteReadDeleteFile(t *testing.T) {
 		t.Fatalf("expected 2 commits in history, got %d", len(history))
 	}
 
-	// LogFilter.Path keeps commits whose tree still *contains* the path, not
-	// only the commit that last changed it — each WriteFile carries the full
-	// parent file set forward, so README.md is present in both commits' trees.
 	readmeHistory, err := m.Log(ctx, branch.ID, LogFilter{Path: "README.md"})
 	if err != nil {
 		t.Fatalf("Log filtered: %v", err)
 	}
-	if len(readmeHistory) != 2 {
-		t.Fatalf("expected 2 commits whose tree contains README.md, got %d", len(readmeHistory))
+	if len(readmeHistory) != 1 {
+		t.Fatalf("expected 1 commit that changed README.md, got %d", len(readmeHistory))
 	}
 
 	commit3, err := m.DeleteFile(ctx, DeleteFileRequest{BranchID: branch.ID, Path: "README.md"})
