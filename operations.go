@@ -47,5 +47,6 @@ func Sentinels() map[string]error {
 		"ErrBlobContentUnavailable":       ErrBlobContentUnavailable,
 		"ErrContentTampered":              ErrContentTampered,
 		"ErrMergeNotPermitted":            ErrMergeNotPermitted,
+		"ErrMergeConflicted":              ErrMergeConflicted,
 	}
 }

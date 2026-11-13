@@ -2,6 +2,8 @@ package mwanachamagit
 
 import "errors"
 
+var ErrMergeConflicted = errors.New("merge conflict")
+
 // ErrRepoAlreadyExists is returned by [GitManager.InitRepo] when a
 // repository with the same name already exists.
 var ErrRepoAlreadyExists = errors.New("repository already exists")

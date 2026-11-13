@@ -50,6 +50,10 @@ func (e *ErrMergeConflict) Error() string {
 	return fmt.Sprintf("merge conflict on task branch %q: conflicting files %v", e.TaskID, e.ConflictingFiles)
 }
 
+func (e *ErrMergeConflict) Is(target error) bool {
+	return target == ErrMergeConflicted
+}
+
 type ImportRepoRequest struct {
 	Name          string `json:"name"`
 	Description   string `json:"description,omitempty"`

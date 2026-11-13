@@ -920,6 +920,7 @@
     "ErrMergeRequestNotOpen": 409,
     "ErrDefaultBranchDeleteForbidden": 409,
     "ErrMergeConcurrencyConflict": 409,
+    "ErrMergeConflicted": 409,
     "ErrImportJobNotCancellable": 409,
     "ErrBranchAlreadyFetched": 409,
     "ErrRepoNotInitialised": 404,
