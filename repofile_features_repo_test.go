@@ -8,7 +8,7 @@ import (
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-func newFeatureBranch(t *testing.T, rf *RepoFile, repo models.Repository, name, runID string) models.Branch {
+func repoFeatureBranch(t *testing.T, rf *RepoFile, repo models.Repository, name, runID string) models.Branch {
 	t.Helper()
 	branch, err := rf.CreateBranch(context.Background(), CreateBranchRequest{
 		RepositoryID:  repo.ID,
@@ -21,7 +21,7 @@ func newFeatureBranch(t *testing.T, rf *RepoFile, repo models.Repository, name, 
 	return branch
 }
 
-func branchNames(branches []models.Branch) map[string]bool {
+func repoFeatureBranchNames(branches []models.Branch) map[string]bool {
 	names := make(map[string]bool, len(branches))
 	for _, b := range branches {
 		names[b.Name] = true
@@ -278,7 +278,7 @@ func TestRepoFileFeatures_CreateBranch(t *testing.T) {
 func TestRepoFileFeatures_CreateBranchFromBranch(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	base := newFeatureBranch(t, rf, repo, "base", "")
+	base := repoFeatureBranch(t, rf, repo, "base", "")
 	commits := writeFeatureFiles(t, rf, base.ID, []featureFile{{Path: "b.txt", Content: "b"}})
 	child, err := rf.CreateBranch(ctx, CreateBranchRequest{RepositoryID: repo.ID, Name: "child", FromBranchID: base.ID})
 	if err != nil {
@@ -299,7 +299,7 @@ func TestRepoFileFeatures_CreateBranchFromBranch(t *testing.T) {
 func TestRepoFileFeatures_CreateBranchErrors(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	newFeatureBranch(t, rf, repo, "dup", "")
+	repoFeatureBranch(t, rf, repo, "dup", "")
 	if _, err := rf.CreateBranch(ctx, CreateBranchRequest{RepositoryID: repo.ID, Name: "dup"}); !errors.Is(err, ErrBranchExists) {
 		t.Fatalf("duplicate branch err = %v, want ErrBranchExists", err)
 	}
@@ -317,7 +317,7 @@ func TestRepoFileFeatures_CreateBranchErrors(t *testing.T) {
 func TestRepoFileFeatures_GetBranch(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "run-7")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "run-7")
 	got, err := rf.GetBranch(ctx, feature.ID)
 	if err != nil {
 		t.Fatalf("GetBranch: %v", err)
@@ -340,7 +340,7 @@ func TestRepoFileFeatures_GetBranch(t *testing.T) {
 func TestRepoFileFeatures_GetBranchByName(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "task/abc-001", "")
+	feature := repoFeatureBranch(t, rf, repo, "task/abc-001", "")
 	got, err := rf.GetBranchByName(ctx, repo.ID, "task/abc-001")
 	if err != nil {
 		t.Fatalf("GetBranchByName: %v", err)
@@ -366,8 +366,8 @@ func TestRepoFileFeatures_GetBranchByName(t *testing.T) {
 func TestRepoFileFeatures_ListBranches(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	newFeatureBranch(t, rf, repo, "one", "")
-	newFeatureBranch(t, rf, repo, "two", "")
+	repoFeatureBranch(t, rf, repo, "one", "")
+	repoFeatureBranch(t, rf, repo, "two", "")
 	branches, err := rf.ListBranches(ctx, repo.ID)
 	if err != nil {
 		t.Fatalf("ListBranches: %v", err)
@@ -375,7 +375,7 @@ func TestRepoFileFeatures_ListBranches(t *testing.T) {
 	if len(branches) != 3 {
 		t.Fatalf("branches = %+v", branches)
 	}
-	names := branchNames(branches)
+	names := repoFeatureBranchNames(branches)
 	for _, want := range []string{"main", "one", "two"} {
 		if !names[want] {
 			t.Fatalf("missing branch %q in %v", want, names)
@@ -389,10 +389,10 @@ func TestRepoFileFeatures_ListBranches(t *testing.T) {
 func TestRepoFileFeatures_ListBranchesFiltered(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	newFeatureBranch(t, rf, repo, "a1", "run-a")
-	newFeatureBranch(t, rf, repo, "a2", "run-a")
-	newFeatureBranch(t, rf, repo, "b1", "run-b")
-	newFeatureBranch(t, rf, repo, "plain", "")
+	repoFeatureBranch(t, rf, repo, "a1", "run-a")
+	repoFeatureBranch(t, rf, repo, "a2", "run-a")
+	repoFeatureBranch(t, rf, repo, "b1", "run-b")
+	repoFeatureBranch(t, rf, repo, "plain", "")
 
 	all, err := rf.ListBranchesFiltered(ctx, repo.ID, BranchFilter{})
 	if err != nil {
@@ -406,7 +406,7 @@ func TestRepoFileFeatures_ListBranchesFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBranchesFiltered run-a: %v", err)
 	}
-	names := branchNames(runA)
+	names := repoFeatureBranchNames(runA)
 	if len(runA) != 2 || !names["a1"] || !names["a2"] {
 		t.Fatalf("run-a branches = %+v", runA)
 	}
@@ -435,8 +435,8 @@ func TestRepoFileFeatures_ListBranchesFiltered(t *testing.T) {
 func TestRepoFileFeatures_ListBranchesFilteredSkipsDeleted(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	keep := newFeatureBranch(t, rf, repo, "keep", "run-x")
-	drop := newFeatureBranch(t, rf, repo, "drop", "run-x")
+	keep := repoFeatureBranch(t, rf, repo, "keep", "run-x")
+	drop := repoFeatureBranch(t, rf, repo, "drop", "run-x")
 	if err := rf.DeleteBranch(ctx, drop.ID); err != nil {
 		t.Fatalf("DeleteBranch: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestRepoFileFeatures_ListBranchesFilteredSkipsDeleted(t *testing.T) {
 func TestRepoFileFeatures_DeleteBranch(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "")
 	if err := rf.DeleteBranch(ctx, feature.ID); err != nil {
 		t.Fatalf("DeleteBranch: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestRepoFileFeatures_DeleteBranch(t *testing.T) {
 	if err := rf.DeleteBranch(ctx, defaultBranch.ID); !errors.Is(err, ErrDefaultBranchDeleteForbidden) {
 		t.Fatalf("DeleteBranch default err = %v, want ErrDefaultBranchDeleteForbidden", err)
 	}
-	reused := newFeatureBranch(t, rf, repo, "feature", "")
+	reused := repoFeatureBranch(t, rf, repo, "feature", "")
 	if reused.ID == feature.ID {
 		t.Fatal("recreated branch reused the deleted branch ID")
 	}
@@ -484,7 +484,7 @@ func TestRepoFileFeatures_DeleteBranch(t *testing.T) {
 func TestRepoFileFeatures_MergeBranch(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "run-m")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "run-m")
 	commits := writeFeatureFiles(t, rf, feature.ID, []featureFile{
 		{Path: "docs/readme.md", Content: "hello"},
 		{Path: "src/main.go", Content: "package main"},
@@ -521,7 +521,7 @@ func TestRepoFileFeatures_MergeBranch(t *testing.T) {
 
 func TestRepoFileFeatures_MergeBranchWithoutCommitsLeavesDefaultUntouched(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
-	empty := newFeatureBranch(t, rf, repo, "empty", "")
+	empty := repoFeatureBranch(t, rf, repo, "empty", "")
 	merged, err := rf.MergeBranch(context.Background(), empty.ID)
 	if err != nil {
 		t.Fatalf("MergeBranch: %v", err)
@@ -669,7 +669,7 @@ func TestRepoFileFeatures_DeleteTag(t *testing.T) {
 func TestRepoFileFeatures_CreateMergeRequest(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "run-1")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "run-1")
 	mr, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{
 		RepositoryID:   repo.ID,
 		Title:          "Add widgets",
@@ -697,8 +697,8 @@ func TestRepoFileFeatures_CreateMergeRequest(t *testing.T) {
 
 func TestRepoFileFeatures_CreateMergeRequestExplicitTarget(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
-	source := newFeatureBranch(t, rf, repo, "source", "")
-	target := newFeatureBranch(t, rf, repo, "release", "")
+	source := repoFeatureBranch(t, rf, repo, "source", "")
+	target := repoFeatureBranch(t, rf, repo, "release", "")
 	mr, err := rf.CreateMergeRequest(context.Background(), CreateMergeRequestRequest{
 		RepositoryID:   repo.ID,
 		Title:          "Into release",
@@ -716,7 +716,7 @@ func TestRepoFileFeatures_CreateMergeRequestExplicitTarget(t *testing.T) {
 func TestRepoFileFeatures_CreateMergeRequestErrors(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "")
 	if _, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{RepositoryID: repo.ID, SourceBranchID: feature.ID}); err == nil {
 		t.Fatal("missing title accepted")
 	}
@@ -737,7 +737,7 @@ func TestRepoFileFeatures_CreateMergeRequestErrors(t *testing.T) {
 func TestRepoFileFeatures_GetMergeRequest(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "")
 	mr, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{RepositoryID: repo.ID, Title: "t", SourceBranchID: feature.ID})
 	if err != nil {
 		t.Fatalf("CreateMergeRequest: %v", err)
@@ -758,7 +758,7 @@ func TestRepoFileFeatures_ListMergeRequests(t *testing.T) {
 	rf, repo, _ := newFeatureRepo(t)
 	ctx := context.Background()
 	open := func(title, runID string) models.MergeRequest {
-		branch := newFeatureBranch(t, rf, repo, "br-"+title, runID)
+		branch := repoFeatureBranch(t, rf, repo, "br-"+title, runID)
 		mr, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{RepositoryID: repo.ID, Title: title, SourceBranchID: branch.ID, WorkflowRunID: runID})
 		if err != nil {
 			t.Fatalf("CreateMergeRequest %s: %v", title, err)
@@ -848,7 +848,7 @@ func TestRepoFileFeatures_ListMergeRequests(t *testing.T) {
 func TestRepoFileFeatures_CompleteMergeRequest(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "run-c")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "run-c")
 	commits := writeFeatureFiles(t, rf, feature.ID, []featureFile{{Path: "w.txt", Content: "widget"}})
 	mr, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{RepositoryID: repo.ID, Title: "ship", SourceBranchID: feature.ID, WorkflowRunID: "run-c"})
 	if err != nil {
@@ -892,7 +892,7 @@ func TestRepoFileFeatures_CompleteMergeRequest(t *testing.T) {
 func TestRepoFileFeatures_CloseMergeRequest(t *testing.T) {
 	rf, repo, defaultBranch := newFeatureRepo(t)
 	ctx := context.Background()
-	feature := newFeatureBranch(t, rf, repo, "feature", "")
+	feature := repoFeatureBranch(t, rf, repo, "feature", "")
 	writeFeatureFiles(t, rf, feature.ID, []featureFile{{Path: "w.txt", Content: "widget"}})
 	mr, err := rf.CreateMergeRequest(ctx, CreateMergeRequestRequest{RepositoryID: repo.ID, Title: "abandon", SourceBranchID: feature.ID})
 	if err != nil {
