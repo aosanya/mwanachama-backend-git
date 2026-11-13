@@ -19,6 +19,17 @@ Hub issue G57 builds the open path: decisions 1, 2 and 11.
 The Postgres blob searcher and the Postgres-only index in `Provision` still
 exist but are not on this path.
 
+## Catalog wins (G60)
+
+Hub issue G60 builds decision 8.
+
+- `ErrRepositoryNotRegistered` ("repository file has no catalog entry") is returned when a `.db` file has no catalog entry. The file is not opened or touched.
+- `RegisteredFileOpener` (`repository_registration.go`) is the one door. `Open(ctx, fileName)` checks registration first. `ListRegistered` lists only the registered `.db` files in the folder and skips the others silently. File names must be plain base names ending `.db`; a path-like name is refused with a different error, so it is never mistaken for an unregistered file.
+- Registration is a `RegistrationCheck`. `RegistrationCheckFromCatalog` says a file is registered when some catalog entry's `FileName` equals it. `NewRegisteredRepoFileOpener` opens `RepoFile`s through it, and `RepoFiles` (G58) opens through the same guard.
+- The tests show a copied valid file refused, listed nowhere, opening after registration, and refused again once its entry is removed.
+
+Not built: nothing deletes the file when its entry is removed, and `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
+
 ## Why
 
 A repository is one `.db` file that can be copied, backed up or handed to
