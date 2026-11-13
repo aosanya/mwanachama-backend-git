@@ -132,7 +132,7 @@ Hub issue G65 exercises every `GitManager` operation through `OpenRepoFile`, on 
 | `repofile_features_copy_test.go` | Copy the file to a new folder: everything still reads. | 1 |
 | `repofile_features_merge_test.go` | Merging branches. | 9 |
 | `repofile_features_conflict_test.go` | Conflicting edits. | 5 |
-| `repofile_features_history_test.go` | Log, diff order and rebase. | 7 |
+| `repofile_features_history_test.go` | Log, diff order (entries sorted by path) and rebase. | 7 |
 
 Run it with `go test -run 'RepoFileFeatures_' .`.
 
@@ -145,7 +145,6 @@ Some tests fail on purpose because the code lacks the behaviour. They are expect
 | G67 | `MergeBranch` overwrites the default head instead of keeping both sides. | `Merge_DivergedBranchesKeepBothSides`, `Merge_TwoWritersBothLand`, `Merge_RequestDivergedFlowKeepsBothSides`, `Conflict_ParallelMergesLoseNoUpdate` |
 | G68 | Conflicts are never detected: `ErrMergeConflict` is never returned and `TopicMergeConflict` is never published. | `Conflict_SameLineEditReturnsMergeConflict`, `Conflict_NonOverlappingEditsMergeCleanly`, `Conflict_MergeRequestFailsAndPublishesFailure`, `Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed` |
 | G69 | There is no rebase operation. | `History_RebaseOperationExists` |
-| G70 | The order of `Diff` results is random. | `History_DiffOrderIsDeterministicAndSortedByPath` |
 | G71 | `Log` with a path filter returns unrelated commits. | `History_LogByPathAfterMerges` |
 
 Found without a failing test:
