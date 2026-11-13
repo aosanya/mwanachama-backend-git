@@ -16,36 +16,7 @@ const (
 	conflictBase = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n"
 )
 
-type conflictHookLocker struct {
-	mu   sync.Mutex
-	hook func()
-}
-
-func (l *conflictHookLocker) arm(hook func()) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.hook = hook
-}
-
-func (l *conflictHookLocker) take() func() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	hook := l.hook
-	l.hook = nil
-	return hook
-}
-
-func (l *conflictHookLocker) WithMergeLock(ctx context.Context, fn func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if hook := l.take(); hook != nil {
-		hook()
-	}
-	return fn()
-}
-
-func conflictOpen(t *testing.T, pub *fakePublisher, locker RefLocker) (*RepoFile, models.Repository, models.Branch) {
+func conflictOpen(t *testing.T, pub *fakePublisher) (*RepoFile, models.Repository, models.Branch) {
 	t.Helper()
 	s, err := LoadSpec(filepath.Join("spec", "examples", "engineering.git.json"))
 	if err != nil {
@@ -57,7 +28,7 @@ func conflictOpen(t *testing.T, pub *fakePublisher, locker RefLocker) (*RepoFile
 	if pub != nil {
 		publisher = pub
 	}
-	rf, err := OpenRepoFile(filepath.Join(t.TempDir(), "conflict.db"), s, publisher, locker, nil)
+	rf, err := OpenRepoFile(filepath.Join(t.TempDir(), "conflict.db"), s, publisher, nil, nil)
 	if err != nil {
 		t.Fatalf("OpenRepoFile: %v", err)
 	}
@@ -121,7 +92,7 @@ func conflictReplaceLine(content string, line int, text string) string {
 
 func conflictDiverged(t *testing.T, pub *fakePublisher) (*RepoFile, models.Repository, models.Branch, models.Branch) {
 	t.Helper()
-	rf, repo, def := conflictOpen(t, pub, nil)
+	rf, repo, def := conflictOpen(t, pub)
 	conflictWrite(t, rf, def.ID, conflictPath, conflictBase)
 	feature := conflictBranchFrom(t, rf, repo.ID, def.ID, "feature/a")
 	conflictWrite(t, rf, feature.ID, conflictPath, conflictReplaceLine(conflictBase, 2, "from branch"))
@@ -163,7 +134,7 @@ func TestRepoFileFeatures_Conflict_SameLineEditReturnsMergeConflict(t *testing.T
 }
 
 func TestRepoFileFeatures_Conflict_NonOverlappingEditsMergeCleanly(t *testing.T) {
-	rf, repo, def := conflictOpen(t, nil, nil)
+	rf, repo, def := conflictOpen(t, nil)
 	conflictWrite(t, rf, def.ID, conflictPath, conflictBase)
 	feature := conflictBranchFrom(t, rf, repo.ID, def.ID, "feature/a")
 	conflictWrite(t, rf, feature.ID, conflictPath, conflictReplaceLine(conflictBase, 1, "top from branch"))
@@ -227,38 +198,6 @@ func TestRepoFileFeatures_Conflict_MergeRequestFailsAndPublishesFailure(t *testi
 	}
 }
 
-func TestRepoFileFeatures_Conflict_ConcurrentHeadMoveReturnsConcurrencyConflictThenRetrySucceeds(t *testing.T) {
-	locker := &conflictHookLocker{}
-	rf, repo, def := conflictOpen(t, nil, locker)
-	ctx := context.Background()
-	conflictWrite(t, rf, def.ID, "base.txt", "base\n")
-	feature := conflictBranchFrom(t, rf, repo.ID, def.ID, "feature/b")
-	conflictWrite(t, rf, feature.ID, "mine.txt", "mine\n")
-	locker.arm(func() { conflictWrite(t, rf, def.ID, "theirs.txt", "theirs\n") })
-
-	_, err := rf.MergeBranch(ctx, feature.ID)
-
-	if !errors.Is(err, ErrMergeConcurrencyConflict) {
-		t.Fatalf("MergeBranch after the default head moved = %v, want ErrMergeConcurrencyConflict", err)
-	}
-	if got := conflictRead(t, rf, def.ID, "theirs.txt"); got != "theirs\n" {
-		t.Fatalf("default lost the other writer's commit: %q", got)
-	}
-	if _, readErr := rf.ReadFile(ctx, def.ID, "mine.txt"); readErr == nil {
-		t.Fatal("default holds the branch file although the merge reported a conflict")
-	}
-
-	if _, err := rf.MergeBranch(ctx, feature.ID); err != nil {
-		t.Fatalf("retry MergeBranch: %v", err)
-	}
-	if got := conflictRead(t, rf, def.ID, "mine.txt"); got != "mine\n" {
-		t.Fatalf("default missing the merged branch file after retry: %q", got)
-	}
-	if got := conflictRead(t, rf, def.ID, "theirs.txt"); got != "theirs\n" {
-		t.Fatalf("default lost the other writer's file after retry: %q", got)
-	}
-}
-
 func TestRepoFileFeatures_Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed(t *testing.T) {
 	rf, _, def, feature := conflictDiverged(t, nil)
 	ctx := context.Background()
@@ -278,7 +217,7 @@ func TestRepoFileFeatures_Conflict_ResolvingOnTheSourceBranchLetsTheMergeSucceed
 }
 
 func TestRepoFileFeatures_Conflict_ParallelMergesLoseNoUpdate(t *testing.T) {
-	rf, repo, def := conflictOpen(t, nil, nil)
+	rf, repo, def := conflictOpen(t, nil)
 	ctx := context.Background()
 	conflictWrite(t, rf, def.ID, "base.txt", "base\n")
 	branchA := conflictBranchFrom(t, rf, repo.ID, def.ID, "feature/a")
