@@ -684,7 +684,6 @@ func commitToEntry(r models.Commit) CommitEntry {
 	}
 }
 
-// diffBlobs computes added/modified/deleted file entries between two blob sets.
 func diffBlobs(fromBlobs, toBlobs []models.Blob) []FileDiff {
 	fromMap := make(map[string]models.Blob, len(fromBlobs))
 	for _, b := range fromBlobs {
@@ -696,7 +695,6 @@ func diffBlobs(fromBlobs, toBlobs []models.Blob) []FileDiff {
 	}
 
 	var diffs []FileDiff
-	// Added or modified.
 	for path, toBlob := range toMap {
 		if fromBlob, ok := fromMap[path]; !ok {
 			diffs = append(diffs, FileDiff{Path: path, Operation: "added"})
@@ -704,12 +702,12 @@ func diffBlobs(fromBlobs, toBlobs []models.Blob) []FileDiff {
 			diffs = append(diffs, FileDiff{Path: path, Operation: "modified"})
 		}
 	}
-	// Deleted.
 	for path := range fromMap {
 		if _, ok := toMap[path]; !ok {
 			diffs = append(diffs, FileDiff{Path: path, Operation: "deleted"})
 		}
 	}
+	sort.Slice(diffs, func(i, j int) bool { return diffs[i].Path < diffs[j].Path })
 	return diffs
 }
 
