@@ -28,7 +28,7 @@ Hub issue G60 builds decision 8.
 - Registration is a `RegistrationCheck`. `RegistrationCheckFromCatalog` says a file is registered when some catalog entry's `FileName` equals it. `NewRegisteredRepoFileOpener` opens `RepoFile`s through it, and `RepoFiles` (G58) opens through the same guard.
 - The tests show a copied valid file refused, listed nowhere, opening after registration, and refused again once its entry is removed.
 
-Not built: nothing deletes the file when its entry is removed, and `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
+Not built: `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status.
 
 ## Create and delete (G61)
 
