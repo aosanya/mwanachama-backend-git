@@ -38,7 +38,7 @@ Not built: `routes/` does not map `ErrRepositoryNotRegistered` to an HTTP status
 Hub issue G61 builds decisions 7 and 8 together: a repository is a file plus a catalog entry, and one call makes or removes both.
 
 - `RepositoryFolder.Create` opens a new `.db` file, runs `InitRepo` in it, then registers the entry. A failure before the entry is written removes the file, so no file is left without an entry.
-- `RepositoryFolder.Delete` (and `Purge`) removes the file first, then the entry. A failure keeps the entry, so the repository is still listed and a second `Delete` finishes the job.
+- `RepositoryFolder.Delete` (and `Purge`) releases the file from the `RepoFiles` cache when one is given (`WithRepoFiles`), removes the `.db` file and its `-journal` file, then the entry. A failure keeps the entry, so the repository is still listed and a second `Delete` finishes the job.
 - A stray file that a failed cleanup could not remove has no entry, so decision 8 ignores it.
 
 Built; the order of steps, the failure table and the tests are in `3. implementation/repository-folder.md`.
@@ -206,10 +206,11 @@ Some tests fail on purpose because the code lacks the behaviour. They are expect
 | G69 | There is no rebase operation. | `History_RebaseOperationExists` |
 | G71 | `Log` with a path filter returned unrelated commits. Fixed in commit 69df2ae, see [Log path filter](log-path-filter.md). | `History_LogByPathAfterMerges` |
 | G72 | `MergeBranch` moved the default head to the source head, so a second merge of a sibling branch dropped the first branch's commits and files; refused merges were 0. Fixed by the true merge, see [How a merge works](merge.md); the concurrency tests now run in plain `go test`. | `TestRepoFileConcurrency_SecondMergeOfSiblingBranchKeepsFirstMergedCommit`, `TestRepoFileConcurrency_ManyAgentsMergeIntoOneRepositoryFile` (now pass) |
+| G74 | `RepositoryFolder.Purge` is the same as `Delete` by design, but both left a crash's `-journal` file and a cached open handle behind. Both now release the handle and remove the `.db`, the `-journal` and the entry; the nightly backup copy is outside the folder and untouched. | `TestRepositoryFolderPurge_LeavesNothingOfTheRepositoryBehind` (now passes) |
+| G75 | In single-repository mode a deleted repository still blocked `InitRepo`, because the guard counted archived rows. Fixed by counting only rows that are not deleted. | `TestSingleRepositoryInitRepoSucceedsAgainAfterDeleteRepo` (now passes) |
 
 Found without a failing test:
 
 - `mergeIntoDefault` takes the default head that was read before the merge, and the compare-and-swap checks against it. `TestMergeCommit_StaleExpectedDefaultReturnsConcurrencyConflict` reaches `ErrMergeConcurrencyConflict` by passing a stale head. Inside the lock the head cannot move, so only a writer outside the module can cause it in practice. See [How a merge works](merge.md).
 - `DeleteFile` writes an empty blob rather than removing the path. This is the documented design.
-- In single-repository mode a deleted repository still blocks `InitRepo`, because `ErrRepoAlreadyExists` counts archived rows.
-- `PurgeRepo` is the same as `DeleteRepo`: a soft delete.
+- `PurgeRepo` inside a `RepoFile` is the same as `DeleteRepo`: a soft delete of the row. Removing the file is `RepositoryFolder.Delete` or `Purge`, which are the same by design (G74).

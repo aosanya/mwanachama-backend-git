@@ -22,7 +22,8 @@ import (
 func (m *gitManager) InitRepo(ctx context.Context, req CreateRepoRequest) (models.Repository, error) {
 	if m.singleRepository {
 		var existing int64
-		if err := m.db.WithContext(ctx).Table(m.tables.Repositories).Count(&existing).Error; err != nil {
+		if err := m.db.WithContext(ctx).Table(m.tables.Repositories).
+			Where("NOT deleted").Count(&existing).Error; err != nil {
 			return models.Repository{}, fmt.Errorf("InitRepo: count repositories: %w", err)
 		}
 		if existing > 0 {

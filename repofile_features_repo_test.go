@@ -222,8 +222,8 @@ func TestRepoFileFeatures_DeleteRepo(t *testing.T) {
 	if err := rf.DeleteRepo(ctx, repo.ID); !errors.Is(err, ErrRepoNotInitialised) {
 		t.Fatalf("second DeleteRepo err = %v, want ErrRepoNotInitialised", err)
 	}
-	if _, err := rf.InitRepo(ctx, CreateRepoRequest{Name: "again"}); !errors.Is(err, ErrRepoAlreadyExists) {
-		t.Fatalf("InitRepo after DeleteRepo err = %v, want ErrRepoAlreadyExists (single-repository file keeps its archived row)", err)
+	if _, err := rf.InitRepo(ctx, CreateRepoRequest{Name: "again"}); err != nil {
+		t.Fatalf("InitRepo after DeleteRepo err = %v, want nil", err)
 	}
 }
 
