@@ -46,8 +46,9 @@ last commit time yet.
 | Step | Does |
 |------|------|
 | 1 | Looks the entry up. No entry returns `ErrRepoNotInitialised` and touches nothing. |
-| 2 | Removes the file. A file that is already missing counts as removed. |
-| 3 | Removes the entry. An entry that is already gone counts as removed. |
+| 2 | When `WithRepoFiles` was given, evicts the file's cached handle (waiting for users of it), so no open handle outlives the file. |
+| 3 | Removes the `.db` file, then its `-journal` file. A file that is already missing counts as removed. |
+| 4 | Removes the entry. An entry that is already gone counts as removed. |
 
 The file goes first, so an entry never points at a file that was deleted
 without anyone being told.
@@ -79,13 +80,12 @@ wrapped so `Register` and `Remove` can fail, and the engineering spec.
 | `TestRepositoryFolderDelete_AFailedEntryRemovalKeepsTheEntryAndASecondDeleteCompletes` | The file is already gone, the entry stays, and a second `Delete` clears it. |
 | `TestRepositoryFolderDelete_AnUnknownIDIsRefusedAndTouchesNothing` | An unknown id returns `ErrRepoNotInitialised`; the existing file and entry stay. |
 | `TestRepositoryFolderPurge_RemovesTheFileAndTheEntryLikeDelete` | `Purge` does what `Delete` does. |
+| `TestRepositoryFolderPurge_LeavesNothingOfTheRepositoryBehind` | After a write through the `RepoFiles` cache and a planted `-journal`, `Purge` leaves no `.db`, no `-journal`, no entry and no cached handle, and the same name can be created again (G74). |
 | `TestRepositoryFolderDelete_LeavesTheOtherRepositorysFileAndEntryIntact` | Deleting one repository leaves the other's file, entry and data whole. |
 
 ## Not built
 
 - Nothing uses `RepositoryFolder` yet. `GitManager`'s `InitRepo` in a
   multi-file deployment and wakala-api still have to call it (hub issue G64).
-- A file held open by the `RepoFiles` cache is not evicted on `Delete`. The
-  caller must have released it first.
 - A stray file left by a failed cleanup is not swept. It stays unregistered
   and ignored until someone removes it.

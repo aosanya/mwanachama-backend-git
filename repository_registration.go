@@ -12,6 +12,8 @@ import (
 
 const repositoryFileSuffix = ".db"
 
+const repositoryJournalSuffix = "-journal"
+
 type RegistrationCheck func(ctx context.Context, fileName string) (bool, error)
 
 type RegisteredFileOpener[T any] struct {

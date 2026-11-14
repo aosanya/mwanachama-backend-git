@@ -57,6 +57,24 @@ func (c *RepoFileCache[H]) Open() int {
 	return len(c.entries)
 }
 
+func (c *RepoFileCache[H]) Evict(path string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for {
+		entry, ok := c.entries[path]
+		if !ok {
+			return nil
+		}
+		if entry.refs == 0 {
+			c.recency.Remove(entry.node)
+			delete(c.entries, path)
+			c.cond.Broadcast()
+			return c.closeHandle(entry.handle)
+		}
+		c.cond.Wait()
+	}
+}
+
 func (c *RepoFileCache[H]) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

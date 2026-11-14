@@ -17,12 +17,17 @@ type RepositoryFolder struct {
 	catalog    RepositoryCatalog
 	open       func(path string) (*RepoFile, error)
 	removeFile func(path string) error
+	files      *RepoFiles
 }
 
 type RepositoryFolderOption func(*RepositoryFolder)
 
 func withFileRemover(remove func(path string) error) RepositoryFolderOption {
 	return func(f *RepositoryFolder) { f.removeFile = remove }
+}
+
+func WithRepoFiles(files *RepoFiles) RepositoryFolderOption {
+	return func(f *RepositoryFolder) { f.files = files }
 }
 
 func NewRepositoryFolder(folder string, catalog RepositoryCatalog, open func(path string) (*RepoFile, error), opts ...RepositoryFolderOption) *RepositoryFolder {
@@ -100,8 +105,16 @@ func (f *RepositoryFolder) Delete(ctx context.Context, repoID string) error {
 	if err != nil {
 		return fmt.Errorf("RepositoryFolder.Delete: lookup %s: %w", repoID, err)
 	}
-	if err := f.removeFile(filepath.Join(f.folder, entry.FileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("RepositoryFolder.Delete: remove %s: %w", entry.FileName, err)
+	if f.files != nil {
+		if err := f.files.Evict(entry.FileName); err != nil {
+			return fmt.Errorf("RepositoryFolder.Delete: release %s: %w", entry.FileName, err)
+		}
+	}
+	path := filepath.Join(f.folder, entry.FileName)
+	for _, name := range []string{path, path + repositoryJournalSuffix} {
+		if err := f.removeFile(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("RepositoryFolder.Delete: remove %s: %w", filepath.Base(name), err)
+		}
 	}
 	if err := f.catalog.Remove(ctx, repoID); err != nil && !errors.Is(err, ErrRepositoryNotCatalogued) {
 		return fmt.Errorf("RepositoryFolder.Delete: remove catalog entry %s: %w", repoID, err)
