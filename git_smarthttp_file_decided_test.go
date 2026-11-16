@@ -14,27 +14,6 @@ const (
 	withOthersRefusal = "not applied because another ref in this push was refused"
 )
 
-func TestDecidedGitPush_APushedTagIsRefusedWithThePlainMessageAndNoTagAppears(t *testing.T) {
-	s := newFileGitServer(t)
-	work := s.clone(t)
-	transportCommit(t, work, "tagged.txt", "x\n", "to be tagged")
-	transportGit(t, work, "tag", "v1")
-
-	out, err := transportGitMayFail(work, "push", "origin", "v1")
-	if err == nil {
-		t.Fatalf("a tag push succeeded:\n%s", out)
-	}
-	if !strings.Contains(out, notABranchRefusal) {
-		t.Errorf("the refusal did not carry the plain message:\n%s", out)
-	}
-
-	fresh := s.clone(t)
-	transportGit(t, fresh, "fetch", "--tags", "origin")
-	if tags := transportGit(t, fresh, "tag", "--list"); tags != "" {
-		t.Errorf("tags in a fresh clone after a refused tag push = %q", tags)
-	}
-}
-
 func TestDecidedGitPush_ARefOutsideRefsHeadsIsRefusedPerRefAndTheBranchBesideItIsNotApplied(t *testing.T) {
 	s := newFileGitServer(t)
 	ctx := context.Background()

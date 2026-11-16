@@ -435,6 +435,7 @@ type gitManager struct {
 	locker    RefLocker
 	searcher  BlobSearcher
 	maxFile   int64
+	maxPush   int64
 	merging   MergeGate
 
 	catalog        RepositoryCatalog
