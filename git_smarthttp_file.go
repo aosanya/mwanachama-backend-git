@@ -31,7 +31,7 @@ func (l snapshotLoader) Load(*transport.Endpoint) (storer.Storer, error) { retur
 type fileSmartHTTP struct{ m *gitManager }
 
 func (r *RepoFile) GitHTTPHandler() http.Handler {
-	return &fileSmartHTTP{m: r.GitManager.(*gitManager)}
+	return processGitRequests.wrap(&fileSmartHTTP{m: r.GitManager.(*gitManager)})
 }
 
 func (h *fileSmartHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
