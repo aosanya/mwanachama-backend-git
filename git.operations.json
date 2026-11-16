@@ -46,7 +46,7 @@
       "call": "ListRepositorySummaries",
       "action": "git.repository.list",
       "title": "List repositories",
-      "description": "Every repository of the catalog that has not been removed, each with its id, its name, the name of its default branch and that branch's id, so a caller can open the tree of the default branch.",
+      "description": "Every repository of the catalog that has not been removed, each with its id, its name, the name of its default branch, that branch's id (so a caller can open the tree of the default branch) and last_commit_at, the time of its latest commit, left out for a repository with no commit.",
       "returns": [
         {
           "body": true

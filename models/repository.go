@@ -17,4 +17,5 @@ type RepositorySummary struct {
 	Name            string `json:"name"`
 	DefaultBranch   string `json:"default_branch"`
 	DefaultBranchID string `json:"default_branch_id"`
+	LastCommitAt    string `json:"last_commit_at,omitempty"`
 }
