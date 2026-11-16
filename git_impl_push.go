@@ -88,32 +88,54 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 	return m.indexPushedBranchFrom(ctx, repo, repoRow, branchRef, oldSHA, newSHA, start)
 }
 
+var errStalePush = errors.New("the branch moved while you were pushing; fetch and try again")
+
+type indexedPush struct {
+	head       models.Commit
+	newCommits int
+}
+
 func (m *gitManager) indexPushedBranchFrom(ctx context.Context, repo *gogit.Repository, repoRow models.Repository, branchRef, oldSHA, newSHA string, start time.Time) error {
+	indexed, err := m.indexPushedObjects(ctx, repo, repoRow, branchRef, oldSHA, newSHA)
+	if err != nil {
+		return err
+	}
+	branchID, err := m.findOrCreatePushedBranch(ctx, repoRow.ID, repoRow.Name, branchRef, models.NowRFC3339())
+	if err != nil {
+		return fmt.Errorf("IndexPushedBranch %s/%s: resolve branch row: %w", repoRow.Name, branchRef, err)
+	}
+	if _, err := m.advanceBranchHead(ctx, branchID, indexed.head.ID, ""); err != nil {
+		return fmt.Errorf("IndexPushedBranch %s/%s: advance branch head: %w", repoRow.Name, branchRef, err)
+	}
+	m.announcePush(ctx, repoRow, branchRef, newSHA, branchID, indexed, start)
+	return nil
+}
+
+func (m *gitManager) indexPushedObjects(ctx context.Context, repo *gogit.Repository, repoRow models.Repository, branchRef, oldSHA, newSHA string) (indexedPush, error) {
 	repoName := repoRow.Name
 	newHash := gogitplumbing.NewHash(newSHA)
 	newCount, err := m.walkNewCommits(ctx, repo, newHash, oldSHA)
 	if err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: walk commits: %w", repoName, branchRef, err)
+		return indexedPush{}, fmt.Errorf("IndexPushedBranch %s/%s: walk commits: %w", repoName, branchRef, err)
 	}
 	log.Printf("[push-index] repo=%q ref=%q: indexed %d new commit(s)", repoName, branchRef, newCount)
 
 	tipCommit, err := repo.CommitObject(newHash)
 	if err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: resolve tip commit %s: %w", repoName, branchRef, shortSHA(newSHA), err)
+		return indexedPush{}, fmt.Errorf("IndexPushedBranch %s/%s: resolve tip commit %s: %w", repoName, branchRef, shortSHA(newSHA), err)
 	}
 	tipTree, err := tipCommit.Tree()
 	if err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: resolve tip tree: %w", repoName, branchRef, err)
+		return indexedPush{}, fmt.Errorf("IndexPushedBranch %s/%s: resolve tip tree: %w", repoName, branchRef, err)
 	}
-	now := models.NowRFC3339()
-	rootTreeID, err := m.upsertTreeIdempotent(ctx, repo, tipTree, "", now)
+	rootTreeID, err := m.upsertTreeIdempotent(ctx, repo, tipTree, "", models.NowRFC3339())
 	if err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: upsert tree: %w", repoName, branchRef, err)
+		return indexedPush{}, fmt.Errorf("IndexPushedBranch %s/%s: upsert tree: %w", repoName, branchRef, err)
 	}
 
 	var headCommitRow models.Commit
 	if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("sha = ?", newSHA).First(&headCommitRow).Error; err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: find head commit row for %s: %w", repoName, branchRef, shortSHA(newSHA), err)
+		return indexedPush{}, fmt.Errorf("IndexPushedBranch %s/%s: find head commit row for %s: %w", repoName, branchRef, shortSHA(newSHA), err)
 	}
 	if rootTreeID != "" && headCommitRow.TreeID == "" {
 		if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("id = ?", headCommitRow.ID).
@@ -121,20 +143,77 @@ func (m *gitManager) indexPushedBranchFrom(ctx context.Context, repo *gogit.Repo
 			log.Printf("[push-index] repo=%q ref=%q: WARNING set commit.tree_id: %v", repoName, branchRef, err)
 		}
 	}
+	return indexedPush{head: headCommitRow, newCommits: newCount}, nil
+}
 
-	branchID, branchErr := m.findOrCreatePushedBranch(ctx, repoRow.ID, repoName, branchRef, now)
-	if branchErr != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: resolve branch row: %w", repoName, branchRef, branchErr)
+func (m *gitManager) findPushedBranch(ctx context.Context, repoID, branchRef string) (models.Branch, bool, error) {
+	var row models.Branch
+	err := m.db.WithContext(ctx).Table(m.tables.Branches).
+		Where("repository_id = ? AND name = ? AND NOT deleted", repoID, strings.TrimPrefix(branchRef, branchRefPrefix)).
+		Limit(1).Find(&row).Error
+	if err != nil {
+		return models.Branch{}, false, fmt.Errorf("find branch %q: %w", branchRef, err)
 	}
-	if _, err := m.advanceBranchHead(ctx, branchID, headCommitRow.ID, ""); err != nil {
-		return fmt.Errorf("IndexPushedBranch %s/%s: advance branch head: %w", repoName, branchRef, err)
-	}
+	return row, row.ID != "", nil
+}
 
-	m.publish(ctx, TopicBranchPushed, BranchPushedPayload{
-		BranchID: branchID, RepoName: repoName, BranchRef: branchRef, NewSHA: newSHA, NewCommits: newCount,
-	})
-	log.Printf("[push-index] repo=%q ref=%q new=%s: done in %s", repoName, branchRef, shortSHA(newSHA), time.Since(start))
+func expectedBranchSHA(oldSHA string) string {
+	if gogitplumbing.NewHash(oldSHA).IsZero() {
+		return ""
+	}
+	return oldSHA
+}
+
+func (m *gitManager) requireBranchAt(ctx context.Context, repoID, branchRef, oldSHA string) error {
+	branch, _, err := m.findPushedBranch(ctx, repoID, branchRef)
+	if err != nil {
+		return err
+	}
+	if branch.SHA != expectedBranchSHA(oldSHA) {
+		return errStalePush
+	}
 	return nil
+}
+
+func (m *gitManager) movePushedBranch(ctx context.Context, repoRow models.Repository, branchRef, oldSHA string, head models.Commit) (string, error) {
+	repoName := repoRow.Name
+	if err := m.requireBranchAt(ctx, repoRow.ID, branchRef, oldSHA); err != nil {
+		return "", err
+	}
+	branchID, err := m.findOrCreatePushedBranch(ctx, repoRow.ID, repoName, branchRef, models.NowRFC3339())
+	if err != nil {
+		return "", fmt.Errorf("IndexPushedBranch %s/%s: resolve branch row: %w", repoName, branchRef, err)
+	}
+	if err := m.moveBranchHeadIfUnmoved(ctx, branchID, head, oldSHA); err != nil {
+		if errors.Is(err, errStalePush) {
+			return "", err
+		}
+		return "", fmt.Errorf("IndexPushedBranch %s/%s: advance branch head: %w", repoName, branchRef, err)
+	}
+	return branchID, nil
+}
+
+func (m *gitManager) moveBranchHeadIfUnmoved(ctx context.Context, branchID string, head models.Commit, oldSHA string) error {
+	updates := map[string]any{"head_commit_id": head.ID, "updated_at": models.NowRFC3339()}
+	if head.SHA != "" {
+		updates["sha"] = head.SHA
+	}
+	query := m.db.WithContext(ctx).Table(m.tables.Branches).Where("id = ?", branchID)
+	result := query.Where("COALESCE(sha, '') = ?", expectedBranchSHA(oldSHA)).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errStalePush
+	}
+	return nil
+}
+
+func (m *gitManager) announcePush(ctx context.Context, repoRow models.Repository, branchRef, newSHA, branchID string, indexed indexedPush, start time.Time) {
+	m.publish(ctx, TopicBranchPushed, BranchPushedPayload{
+		BranchID: branchID, RepoName: repoRow.Name, BranchRef: branchRef, NewSHA: newSHA, NewCommits: indexed.newCommits,
+	})
+	log.Printf("[push-index] repo=%q ref=%q new=%s: done in %s", repoRow.Name, branchRef, shortSHA(newSHA), time.Since(start))
 }
 
 // walkNewCommits walks backward from tip (following parent links,

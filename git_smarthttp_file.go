@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -250,31 +249,31 @@ func (h *fileSmartHTTP) deleteBranchRow(ctx context.Context, repoID, name string
 }
 
 func (h *fileSmartHTTP) indexAccepted(ctx context.Context, snap *fileSnapshot, req *packp.ReferenceUpdateRequest, status *packp.ReportStatus) {
-	repo, err := snap.repository()
-	if err != nil {
+	if _, err := snap.repository(); err != nil {
 		failEveryCommand(status, err)
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
+	accepted := acceptedRefs(status)
 	failed := map[string]error{}
 	for _, cmd := range req.Commands {
+		if !accepted[cmd.Name.String()] {
+			continue
+		}
 		if cmd.New.IsZero() {
 			if err := h.deleteBranchRow(ctx, snap.repo.ID, strings.TrimPrefix(cmd.Name.String(), branchRefPrefix)); err != nil {
 				failed[cmd.Name.String()] = err
 			}
 			continue
 		}
-		err := h.m.indexPushedBranchFrom(ctx, repo, snap.repo, cmd.Name.String(), cmd.Old.String(), cmd.New.String(), time.Now())
-		if err == nil {
-			err = h.m.storePushedObjects(ctx, repo, snap.repo, cmd.New)
-		}
-		if err != nil {
+		if err := h.m.recordFilePush(ctx, snap, cmd); err != nil {
 			failed[cmd.Name.String()] = err
 		}
 	}
 	for _, cs := range status.CommandStatuses {
 		if err, bad := failed[cs.ReferenceName.String()]; bad {
 			log.Printf("[git-file] ref=%s: %v", cs.ReferenceName, err)
-			cs.Status = "the hub could not record this push: " + err.Error()
+			cs.Status = pushFailureMessage(err)
 		}
 	}
 }
