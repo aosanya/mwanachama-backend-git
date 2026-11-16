@@ -85,7 +85,9 @@ wrapped so `Register` and `Remove` can fail, and the engineering spec.
 
 ## Not built
 
-- Nothing uses `RepositoryFolder` yet. `GitManager`'s `InitRepo` in a
-  multi-file deployment and wakala-api still have to call it (hub issue G64).
 - A stray file left by a failed cleanup is not swept. It stays unregistered
   and ignored until someone removes it.
+
+`RoutedGitManager` (`routing-layer.md`) calls `Create`, `Delete` and `Purge`
+for `InitRepo`, `DeleteRepo` and `PurgeRepo`. Neither API calls it yet (hub
+issue ISS-105).

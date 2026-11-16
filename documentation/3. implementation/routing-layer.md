@@ -1,96 +1,120 @@
-# Routing layer (plan)
+# Routing layer
 
 Hub issue G79, owner decision 2026-11-16. The code that sends each repository
-request to its own SQLite file moves out of the two APIs into this module, so
-both APIs wire it and neither copies it. This page is the plan; it is turned
-into a description of what was built when the last part lands.
+request to its own SQLite file lives in this module, so both APIs wire it and
+neither copies it. `RoutedGitManager` is a `GitManager` over a folder of
+repository files and a `RepositoryCatalog`.
 
-## Sources
+## Where it came from
 
-| Source | Holds |
-|--------|-------|
-| `projects/hub-steward/code/wakala-api/internal/agencies`, the copy that is ahead | `gits_files.go`, `gits_files_routed.go`, `repository_file.go`, `repository_catalog.go`, `gits.go`, their tests, and `last_commit_at` (hub 0adab528, 6e31847e), the file-backed `SmartHTTPHandler` and `RebaseBranch` (hub 7069cc7b) |
-| `mwanachama-wakala-api` `internal/agencies`, read only | commits 39b6248 (catalog adapter, file helpers), 1d2d969 (routed manager), 4655b1c (last commit test). Its routed manager has no `RebaseBranch`, so its package does not build today, and its `SmartHTTPHandler` answers 501 |
+| Source | Held |
+|--------|------|
+| `projects/hub-steward/code/wakala-api/internal/agencies`, the copy that was ahead | `gits_files.go`, `gits_files_routed.go`, `repository_file.go`, hub 787ea282, 0adab528 (`last_commit_at`), 7069cc7b (`RebaseBranch`, file-backed `SmartHTTPHandler`) |
+| `mwanachama-wakala-api` `internal/agencies`, read only | 39b6248 (file helpers), 1d2d969 (routed manager), 4655b1c (last commit test). Its routed manager has no `RebaseBranch`, so its package does not build, and its `SmartHTTPHandler` answers 501 |
 
-The two copies of the routed manager differ in three places only: the import
-paths, `RebaseBranch`, and `SmartHTTPHandler` with `splitRepositoryPath`. The
-port takes the hub copy.
+The port took the hub copy. The hub commit 6e31847e named in the issue is in
+no local hub repository; the `last_commit_at` change is 0adab528.
 
-## The catalog interface already exists
+## The catalog interface
 
-The interface the plan needs is `RepositoryCatalog` in
-`repository_catalog.go` (see `repository-catalog.md`), added for hub issue
-G59. It has `Register`, `Update`, `List`, `Lookup` and `Remove`, and its entry
-carries the id, name, file name, size in bytes and last commit time. It
-imports nothing private. `MemoryRepositoryCatalog` is its in-memory
-implementation, so the routing tests run against it with no catalog module.
+No new interface was needed. `RepositoryCatalog` (`repository_catalog.go`, see
+`repository-catalog.md`) already had `Register`, `Update`, `List`, `Lookup`
+and `Remove` over an entry of id, name, file name, size and last commit time,
+and imports nothing private. `MemoryRepositoryCatalog` implements it for the
+tests. Each API implements it with its own catalog mount.
 
-No second interface is defined. The four operations the routing layer calls
-(list, get, put, delete) are `List`, `Lookup`, `Register` plus `Update`, and
-`Remove`.
+`List` must return entries by name, then id: every listing and the choice of
+the repository for a root keyword follow that order.
 
-| Method | The routing layer uses it to |
-|--------|------------------------------|
-| `List(ctx)` | find a file by repository name, probe every file for an id, list repositories, answer the stray-file check. The order is the order of every listing, so an implementation returns name then id |
-| `Lookup(ctx, id)` | find the file of a repository id. `ErrRepositoryNotCatalogued` becomes `ErrRepoNotInitialised` |
-| `Register(ctx, entry)` | through `RepositoryFolder.Create` |
-| `Update(ctx, id, sizeBytes, lastCommitAt)` | through `WithRepositoryCatalog` on each file opened for use, on every commit |
-| `Remove(ctx, id)` | through `RepositoryFolder.Delete` |
+## Use
 
-## What moves
+```go
+NewRoutedGitManager(folder string, maxOpen int, s *spec.Spec, catalog RepositoryCatalog) (*RoutedGitManager, error)
+```
 
-| From the API | To this module | Name here |
-|--------------|----------------|-----------|
-| `repositoryFolderGit`, `newRepositoryFolderGit` (`gits_files.go`) | `routed_git_manager.go` | `RoutedGitManager`, `NewRoutedGitManager(folder, maxOpen, spec, catalog)` |
-| `fileOwners`, the scopes (`repo`, `named`, `first`, `eachFile`, `locate`, `owning` and the per-kind probes) | `routed_git_scope.go` | unexported |
-| every `GitManager` method of `gits_files_routed.go` | `routed_git_methods.go` | methods of `RoutedGitManager`, `RebaseBranch` included |
-| `SmartHTTPHandler`, `splitRepositoryPath` | `routed_git_smarthttp.go` | `RoutedGitManager.SmartHTTPHandler` |
-| `ErrImportNeedsRepositoryFile` | `errors.go` | same name, exported |
-| `RepositoryFileAt`, `RepositoryFileInFolder` (`repository_file.go`) | `repository_file_stat.go` | same names, exported |
-| the 16 `TestGitFolder_*` tests that do not read the registry, the file helper tests, the last commit test, the Smart HTTP test | `routed_git_*_test.go`, `repository_file_stat_test.go` | rewritten on `MemoryRepositoryCatalog` and the engineering spec |
+| Part | Is |
+|------|----|
+| `folder` | The folder of `.db` files, one per agency |
+| `maxOpen` | Files kept open at once (`RepoFiles`); at least 1 |
+| `s` | The git spec each file is provisioned from |
+| `catalog` | Where the entries live |
 
-`RoutedGitManager` is `GitManager` (a compile-time assertion), plus `Close()`.
-It opens each file for use with `WithRepositoryCatalog(catalog,
-RepositoryFileInFolder(folder, catalog))` and opens the file `Create` writes
-without a catalog, so `InitRepo` does not register the entry a second time.
-It composes the existing `RepositoryFolder`, `RepoFiles` and
-`RegistrationCheckFromCatalog`; nothing of those is copied.
+`Close()` closes every open file. Files opened for use carry
+`WithRepositoryCatalog(catalog, RepositoryFileInFolder(folder, catalog))`, so
+a commit updates the entry's size and last commit time. The open used by
+`RepositoryFolder.Create` carries no catalog, otherwise `InitRepo` would
+register the entry and `Create` would then fail on the second `Register`.
+
+## Files
+
+| File | Holds |
+|------|-------|
+| `routed_git_manager.go` | the type, the constructor, `Close`, `openFiles` |
+| `routed_git_owners.go` | the remembered owner of an id: a mutex-guarded map, emptied past 4096 entries and on every repository delete |
+| `routed_git_scope.go` | the scopes that find a file: by repository id, by name, the first, every file, and by owner probe for a branch, merge request, tag, keyword, import job or fetch job |
+| `routed_git_repository.go` | create, delete, purge, list and summaries, get by id and name |
+| `routed_git_branches.go` | branch calls and file calls (write, read, delete, list, log), rebase |
+| `routed_git_requests.go` | merge requests, tags, rollback by workflow run |
+| `routed_git_graph.go` | diff, import (refused), keywords, edges, graph, fetch, pushed-branch indexing, blob search |
+| `routed_git_smarthttp.go` | `SmartHTTPHandler` and the `GitManager` assertion |
+| `repository_file_stat.go` | `RepositoryFileAt`, `RepositoryFileInFolder` |
+
+## How each call finds its file
+
+| Calls | File found by |
+|-------|---------------|
+| `InitRepo` | `RepositoryFolder.Create` |
+| `DeleteRepo`, `PurgeRepo` | `RepositoryFolder.Delete`; the remembered owners are cleared |
+| `ListRepositories`, `ListRepositorySummaries` | every catalog entry in catalog order; each file is asked for its own row. `UpdatedAt` and the summary's `LastCommitAt` come from the entry |
+| `GetRepository`, `GetBranchByName`, `CreateBranch`, `ListBranches`, `ListBranchesFiltered`, `CreateMergeRequest`, `CreateTag`, `ListTags`, `FetchBranch` | repository id, through the catalog entry. An id with no entry is `ErrRepoNotInitialised` |
+| `GetRepositoryByName`, `SearchBlobs`, `IndexPushedBranch` | repository name, through the catalog |
+| `GetBranch`, `DeleteBranch`, `MergeBranch`, `RebaseBranch`, `WriteFile`, `ReadFile`, `DeleteFile`, `ListDirectory`, `Log`, `CreateEdge`, `DeleteEdge`, `GetNeighborhood`, `SearchByKeywords`, `QueryGraph` | branch id: each file is probed with `GetBranch`, the owner is remembered |
+| `GetMergeRequest`, `CompleteMergeRequest`, `CloseMergeRequest` | merge request id, probed with `GetMergeRequest` |
+| `GetTag`, `DeleteTag` | tag id, probed with `GetTag` |
+| `GetKeyword`, `GetKeywordTree`, `UpdateKeyword`, `DeleteKeyword` | keyword id, probed with `GetKeyword` |
+| `GetImportStatus`, `CancelImport`, `GetFetchBranchStatus` | job id, probed with the status call |
+| `Diff` | each file is tried; `ErrRefNotFound` means not here |
+| `ListMergeRequests` | the repository id when the filter has one, otherwise every file, merged and cut to the limit |
+| `RollbackByWorkflowRun` | every file; the counts are summed |
+| `CreateKeyword` | the file of the parent keyword; a root keyword goes to the first repository in the catalog, and with none it is `ErrRepoNotInitialised` |
+| `ListKeywords` | the file of the parent keyword; with no parent, the roots of every file |
+| `ImportRepo` | refused with `ErrImportNeedsRepositoryFile` |
+| `SmartHTTPHandler` | `/<name>.git/...` is served from the file of the repository with that name: 404 for an unknown name, 400 for a path with no name |
+
+A remembered owner whose file has since lost its entry is forgotten and the
+files are probed again. A file in the folder with no catalog entry is never
+opened (`ErrRepositoryNotRegistered`, decision 8).
 
 ## What stays in each API
 
 | Stays | Why |
 |-------|-----|
-| The adapter from the catalog mount to `RepositoryCatalog` (`NewRepositoryCatalog`, `repository_catalog.go`, its paging and its tests) | It imports the private catalog module. Each API keeps its own, on its own mount |
-| `RepositoriesMount` and `buildFolderGitManager`: look the catalog manager up, build the folder `<GIT_REPOSITORY_FOLDER>/<instance table slug>`, call `NewRoutedGitManager` | The Registry and the instance are the API's |
-| `GIT_REPOSITORY_FOLDER` and `GIT_OPEN_FILES`, `gitFolderFromEnv`, `WithGitRepositoryFolder`, `closeGitManager` | Environment and cache eviction belong to the process |
-| The spec lookup `gitSpecOf` and the `wakala.git` declaration | The declaration registry is the API's |
-| The gate on the git module for the forms git routes and tools (`forms_git_routes.go`, `forms_git_gate_test.go`) | An HTTP and module-gating rule, not routing |
+| The adapter from the catalog mount to `RepositoryCatalog` (`NewRepositoryCatalog`, its paging, its tests) | It imports the private catalog module |
+| `RepositoriesMount` and the build of the manager: look the catalog manager up, call `NewRoutedGitManager(<GIT_REPOSITORY_FOLDER>/<instance table slug>, ...)` | The Registry and the instance are the API's |
+| `GIT_REPOSITORY_FOLDER`, `GIT_OPEN_FILES`, `gitFolderFromEnv`, `WithGitRepositoryFolder`, `closeGitManager` | Environment and cache eviction belong to the process |
+| `gitSpecOf` and the `wakala.git` declaration | The declaration registry is the API's |
+| The gate on the git module for the forms git routes and tools (`forms_git_gate_test.go`) | An HTTP and module-gating rule |
 | The HTTP route that mounts `SmartHTTPHandler` | The API's router |
-| The tests that build a `Registry`: the unset folder keeps the shared-database manager, the environment selects the folder, the registry reads the environment, an instance keeps its files in its own subfolder, and the catalog adapter tests | They need the Registry and the catalog module |
+| The tests that build a `Registry`: an unset folder keeps the shared-database manager, the environment selects the folder, the registry reads the environment, an instance keeps its files in its own subfolder | They need the Registry |
 
-## Not in this move
+## Tests
 
-The shared-database manager is unchanged. The APIs' own switch to this layer,
-and the deletion of their copies, is part of the tag switch of hub issue
-ISS-105 (TD-1509 for the hub, TD-1511 for `mwanachama-wakala-api`), after the
-owner confirms the tags. Neither API and neither `go.mod` is touched here.
+`routed_git_*_test.go` run on `MemoryRepositoryCatalog`, the engineering spec
+and a temporary folder (`routed_git_fixture_test.go`). They are the 15 routing
+tests of 1d2d969 that do not read the Registry, the last commit test of
+4655b1c, a rebase test (the wakala-api copy has none), the Smart HTTP clone
+and push test of hub 7069cc7b, and a test for a path with no repository name.
+`repository_file_stat_test.go` holds the three file helper tests.
 
-## Parts
+## Not done here
 
-Each part is one commit on `master`, builds with `go build ./...` and
-`go vet ./...`, and names the commit it comes from. Each part writes its tests
-first and sees them fail before the code.
-
-| Part | Holds | From |
-|------|-------|------|
-| 1 | `RepositoryFileAt`, `RepositoryFileInFolder` and their tests | wakala-api 39b6248 |
-| 2 | `RoutedGitManager`, its constructor, `Close`, the scopes, repository create, delete, purge, list, get by id and by name, the commit that updates the entry, the stray file, reopening, the open file bound, and the last commit time in summaries | wakala-api 1d2d969; hub 6e31847e and 0adab528 |
-| 3 | every call routed by branch, merge request, tag, keyword, job or ref id, `RebaseBranch`, `ImportRepo` refused | wakala-api 1d2d969; hub 7069cc7b for `RebaseBranch` |
-| 4 | `SmartHTTPHandler` over the named file, the `GitManager` assertion, the clone and push test | hub 7069cc7b |
-| 5 | this page rewritten as a description of what was built; the "Not built" lines of `repository-folder.md` and `repository-catalog.md` updated | |
-
-## Checks
-
-`go build ./...`, `go vet ./...` and `go test -race -timeout 40m ./...` on a
-clean `git archive` export with `../mwanachama-backend-shared` beside it, and
-`go list -deps ./...` showing no private module.
+- Neither API uses it yet and neither deletes its own copy. That is part of
+  the tag switch of hub issue ISS-105 (TD-1509 for the hub, TD-1511 for
+  `mwanachama-wakala-api`), after the owner confirms the tags.
+- The routed manager passes no event publisher, ref locker or blob searcher to
+  `OpenRepoFile`, as the APIs did not.
+- Every call checks registration by listing the catalog, one query per entry.
+- Keywords carry no repository id, so a keyword belongs to one file and an edge
+  to a keyword of another repository is not supported.
+- `ImportRepo` is refused: it writes its repository row from a goroutine and
+  never registers the catalog entry.

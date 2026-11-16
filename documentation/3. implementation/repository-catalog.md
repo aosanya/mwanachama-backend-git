@@ -83,17 +83,16 @@ The tests are `git_impl_repo_catalog_test.go` and
 
 ## What other work must supply
 
-- Hub issue G64 (wakala-api wiring): a `RepositoryCatalog` backed by the
-  agency's catalog instance, storing the three-key document through
-  `Document()` and `ParseRepositoryCatalogDocument`, and the
-  `WithRepositoryCatalog` option when the manager is built.
-- Hub issue G57: the `RepositoryFile` func, returning the real file name and
-  the `os.Stat` size of the repository's `.db` file.
+- Each API: a `RepositoryCatalog` backed by the agency's catalog mount,
+  storing the three-key document through `Document()` and
+  `ParseRepositoryCatalogDocument`. `RoutedGitManager` (`routing-layer.md`)
+  takes it, builds the `RepositoryFile` func with `RepositoryFileInFolder` and
+  turns on `WithRepositoryCatalog` for every file it opens for use.
 
 ## Not wired yet
 
-- No catalog-backed `RepositoryCatalog` in this module, only the fake.
-- The `RepositoryFile` func is supplied by the caller; the module has none.
+- No catalog-backed `RepositoryCatalog` in this module, only the fake. It
+  would import the private catalog module.
 
 ## The repository list's last commit time
 
@@ -112,4 +111,4 @@ this.
 
 A manager that lists a folder of per-repository files fills the field from the
 catalog entry's `LastCommitAt`, which each merge keeps current. That manager is
-the caller's, not this module's.
+`RoutedGitManager` (`routing-layer.md`).
