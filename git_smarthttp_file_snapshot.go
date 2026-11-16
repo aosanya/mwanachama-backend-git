@@ -114,8 +114,16 @@ func (m *gitManager) loadRefs(ctx context.Context, snap *fileSnapshot) error {
 	if err := db.Table(m.tables.Branches).Where("NOT deleted AND sha <> ''").Find(&branches).Error; err != nil {
 		return fmt.Errorf("snapshot branches: %w", err)
 	}
+	names := make([]string, 0, len(branches))
 	for _, b := range branches {
-		if !snap.hasObject(b.SHA) {
+		names = append(names, b.Name)
+	}
+	usable := map[string]bool{}
+	for _, name := range usableBranchNames(snap.repo.DefaultBranch, names) {
+		usable[name] = true
+	}
+	for _, b := range branches {
+		if !usable[b.Name] || !snap.hasObject(b.SHA) {
 			continue
 		}
 		ref := gogitplumbing.NewHashReference(gogitplumbing.NewBranchReferenceName(b.Name), gogitplumbing.NewHash(b.SHA))

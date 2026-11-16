@@ -161,7 +161,7 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if refusals := pushRefusals(snap.repo.DefaultBranch, req); len(refusals) > 0 {
+	if refusals := pushRefusals(snap.repo.DefaultBranch, snap.branchNames(), req); len(refusals) > 0 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxDrainedPushBytes))
 		writeReceiveStatus(w, refusedStatus(req, refusals))
 		return
@@ -182,9 +182,21 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 	writeReceiveStatus(w, status)
 }
 
-func pushRefusals(defaultBranch string, req *packp.ReferenceUpdateRequest) map[string]string {
+func pushRefusals(defaultBranch string, stored []string, req *packp.ReferenceUpdateRequest) map[string]string {
 	refusals := map[string]string{}
 	defaultRef := branchRefPrefix + defaultBranch
+	space := newBranchNamespace()
+	deleted := map[string]bool{}
+	for _, cmd := range req.Commands {
+		if cmd.New.IsZero() {
+			deleted[strings.TrimPrefix(cmd.Name.String(), branchRefPrefix)] = true
+		}
+	}
+	for _, name := range usableBranchNames(defaultBranch, stored) {
+		if !deleted[name] {
+			space.add(name)
+		}
+	}
 	for _, cmd := range req.Commands {
 		name := cmd.Name.String()
 		switch {
@@ -192,6 +204,14 @@ func pushRefusals(defaultBranch string, req *packp.ReferenceUpdateRequest) map[s
 			refusals[name] = refusedDefaultBranch
 		case !strings.HasPrefix(name, branchRefPrefix):
 			refusals[name] = refusedNotABranch
+		case cmd.New.IsZero():
+		default:
+			branch := strings.TrimPrefix(name, branchRefPrefix)
+			if reason, refused := branchNameRefusal(space, branch); refused {
+				refusals[name] = reason
+			} else {
+				space.add(branch)
+			}
 		}
 	}
 	return refusals
