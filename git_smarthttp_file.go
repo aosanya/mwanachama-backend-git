@@ -1,6 +1,7 @@
 package mwanachamagit
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -21,6 +22,7 @@ const (
 	refusedNotABranch    = "only branches can be pushed to the hub"
 	refusedWithOthers    = "not applied because another ref in this push was refused"
 	maxDrainedPushBytes  = 64 << 20
+	postBufferProbe      = "0000"
 )
 
 type snapshotLoader struct{ storage storer.Storer }
@@ -133,6 +135,13 @@ func (h *fileSmartHTTP) uploadPack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
+	body := bufio.NewReader(r.Body)
+	if isPostBufferProbe(body) {
+		setNoCacheHeaders(w)
+		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	snap, srv, ep, ok := h.session(w, r)
 	if !ok {
 		return
@@ -148,13 +157,13 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := packp.NewReferenceUpdateRequest()
-	if err := req.Decode(r.Body); err != nil {
+	if err := req.Decode(body); err != nil {
 		http.Error(w, "malformed receive-pack request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if refusals := pushRefusals(snap.repo.DefaultBranch, snap.branchNames(), req); len(refusals) > 0 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxDrainedPushBytes))
+		_, _ = io.Copy(io.Discard, io.LimitReader(body, maxDrainedPushBytes))
 		writeReceiveStatus(w, refusedStatus(req, refusals))
 		return
 	}
@@ -172,6 +181,11 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 	}
 	h.indexAccepted(r.Context(), snap, req, status)
 	writeReceiveStatus(w, status)
+}
+
+func isPostBufferProbe(body *bufio.Reader) bool {
+	head, err := body.Peek(len(postBufferProbe) + 1)
+	return err == io.EOF && string(head) == postBufferProbe
 }
 
 func pushRefusals(defaultBranch string, stored []string, req *packp.ReferenceUpdateRequest) map[string]string {
