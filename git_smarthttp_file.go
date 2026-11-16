@@ -135,7 +135,13 @@ func (h *fileSmartHTTP) uploadPack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
-	body := bufio.NewReader(r.Body)
+	limit := h.m.pushLimit()
+	if r.ContentLength > limit {
+		writeReceiveStatus(w, pushTooLargeStatus(limit, nil))
+		return
+	}
+	capped := newCappedBody(r.Body, limit)
+	body := bufio.NewReader(capped)
 	if isPostBufferProbe(body) {
 		setNoCacheHeaders(w)
 		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
@@ -158,11 +164,20 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 	}
 	req := packp.NewReferenceUpdateRequest()
 	if err := req.Decode(body); err != nil {
+		if capped.tripped {
+			writeReceiveStatus(w, pushTooLargeStatus(limit, nil))
+			return
+		}
 		http.Error(w, "malformed receive-pack request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if refusals := pushRefusals(snap.repo.DefaultBranch, snap.branchNames(), req); len(refusals) > 0 {
+	rules, err := h.m.tagRulesFor(r.Context(), snap.repo.ID)
+	if err != nil {
+		httpErrorFromTransport(w, err)
+		return
+	}
+	if refusals := pushRefusals(snap.repo.DefaultBranch, snap.branchNames(), rules, req); len(refusals) > 0 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(body, maxDrainedPushBytes))
 		writeReceiveStatus(w, refusedStatus(req, refusals))
 		return
@@ -174,6 +189,10 @@ func (h *fileSmartHTTP) receivePack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status, err := sess.ReceivePack(r.Context(), req)
+	if capped.tripped {
+		writeReceiveStatus(w, pushTooLargeStatus(limit, req))
+		return
+	}
 	if err != nil {
 		log.Printf("[git-file] receive-pack: %v", err)
 		httpErrorFromTransport(w, err)
@@ -188,7 +207,7 @@ func isPostBufferProbe(body *bufio.Reader) bool {
 	return err == io.EOF && string(head) == postBufferProbe
 }
 
-func pushRefusals(defaultBranch string, stored []string, req *packp.ReferenceUpdateRequest) map[string]string {
+func pushRefusals(defaultBranch string, stored []string, tags tagRules, req *packp.ReferenceUpdateRequest) map[string]string {
 	refusals := map[string]string{}
 	defaultRef := branchRefPrefix + defaultBranch
 	space := newBranchNamespace()
@@ -208,6 +227,10 @@ func pushRefusals(defaultBranch string, stored []string, req *packp.ReferenceUpd
 		switch {
 		case name == defaultRef:
 			refusals[name] = refusedDefaultBranch
+		case strings.HasPrefix(name, tagRefPrefix):
+			if reason, refused := tagRefusal(tags, cmd); refused {
+				refusals[name] = reason
+			}
 		case !strings.HasPrefix(name, branchRefPrefix):
 			refusals[name] = refusedNotABranch
 		case cmd.New.IsZero():
@@ -280,7 +303,7 @@ func (h *fileSmartHTTP) indexAccepted(ctx context.Context, snap *fileSnapshot, r
 			}
 			continue
 		}
-		if err := h.m.recordFilePush(ctx, snap, cmd); err != nil {
+		if err := h.recordAcceptedRef(ctx, snap, cmd); err != nil {
 			failed[cmd.Name.String()] = err
 		}
 	}
@@ -290,6 +313,13 @@ func (h *fileSmartHTTP) indexAccepted(ctx context.Context, snap *fileSnapshot, r
 			cs.Status = pushFailureMessage(err)
 		}
 	}
+}
+
+func (h *fileSmartHTTP) recordAcceptedRef(ctx context.Context, snap *fileSnapshot, cmd *packp.Command) error {
+	if strings.HasPrefix(cmd.Name.String(), tagRefPrefix) {
+		return h.m.recordFileTag(ctx, snap, cmd)
+	}
+	return h.m.recordFilePush(ctx, snap, cmd)
 }
 
 func failEveryCommand(status *packp.ReportStatus, err error) {

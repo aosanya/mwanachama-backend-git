@@ -78,5 +78,9 @@ func pushFailureMessage(err error) string {
 	if errors.Is(err, errStalePush) {
 		return errStalePush.Error()
 	}
+	var refusal pushRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Error()
+	}
 	return "the hub could not record this push: " + err.Error()
 }
