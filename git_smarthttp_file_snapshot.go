@@ -62,10 +62,14 @@ func (m *gitManager) loadRefs(ctx context.Context, snap *fileSnapshot) error {
 		usable[name] = true
 	}
 	for _, b := range branches {
-		if !usable[b.Name] || !snap.hasObject(b.SHA) {
+		if !usable[b.Name] {
 			continue
 		}
-		ref := gogitplumbing.NewHashReference(gogitplumbing.NewBranchReferenceName(b.Name), gogitplumbing.NewHash(b.SHA))
+		tip, ok := m.nearestStoredCommit(ctx, snap, b)
+		if !ok {
+			continue
+		}
+		ref := gogitplumbing.NewHashReference(gogitplumbing.NewBranchReferenceName(b.Name), gogitplumbing.NewHash(tip))
 		if err := snap.storage.SetReference(ref); err != nil {
 			return fmt.Errorf("snapshot branch %s: %w", b.Name, err)
 		}
@@ -92,6 +96,30 @@ func (m *gitManager) loadRefs(ctx context.Context, snap *fileSnapshot) error {
 		}
 	}
 	return nil
+}
+
+const maxTipFallbackDepth = 256
+
+func (m *gitManager) nearestStoredCommit(ctx context.Context, snap *fileSnapshot, b models.Branch) (string, bool) {
+	sha, commitID := b.SHA, b.HeadCommitID
+	for depth := 0; depth < maxTipFallbackDepth; depth++ {
+		if snap.hasObject(sha) {
+			return sha, true
+		}
+		if commitID == "" {
+			return "", false
+		}
+		parentIDs, err := CommitParentIDs(m.db.WithContext(ctx), m.tables, commitID)
+		if err != nil || len(parentIDs) == 0 {
+			return "", false
+		}
+		var parent models.Commit
+		if err := m.db.WithContext(ctx).Table(m.tables.Commits).Where("id = ?", parentIDs[0]).First(&parent).Error; err != nil {
+			return "", false
+		}
+		sha, commitID = parent.SHA, parent.ID
+	}
+	return "", false
 }
 
 func encodedBytes(repo *gogit.Repository, kind gogitplumbing.ObjectType, hash gogitplumbing.Hash) ([]byte, error) {
