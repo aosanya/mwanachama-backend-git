@@ -55,3 +55,31 @@ func TestRoutedGitManager_AnIdIsFoundInWhicheverFileOwnsItInEitherOrder(t *testi
 		t.Fatalf("unknown branch = %v, want ErrBranchNotFound", err)
 	}
 }
+
+func TestRoutedGitManager_ABranchIsRebasedOntoTheDefaultHeadInItsOwnFile(t *testing.T) {
+	f := newRoutedGitFixture(t, 4)
+	f.initRepo(t, "aaa")
+	repo, main := f.initRepo(t, "zzz")
+	f.writeAndMerge(t, repo, main, "base.md", "base")
+	feature, err := f.manager.CreateBranch(f.ctx, CreateBranchRequest{RepositoryID: repo.ID, Name: "feature", FromBranchID: main.ID})
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	if _, err := f.manager.WriteFile(f.ctx, WriteFileRequest{BranchID: feature.ID, Path: "feature.md", Content: "feature"}); err != nil {
+		t.Fatalf("WriteFile feature: %v", err)
+	}
+	f.writeAndMerge(t, repo, main, "later.md", "later")
+
+	if _, err := f.manager.RebaseBranch(f.ctx, RebaseBranchRequest{BranchID: feature.ID}); err != nil {
+		t.Fatalf("RebaseBranch: %v", err)
+	}
+	for path, want := range map[string]string{"feature.md": "feature", "later.md": "later", "base.md": "base"} {
+		blob, err := f.manager.ReadFile(f.ctx, feature.ID, path)
+		if err != nil || blob.Content != want {
+			t.Errorf("ReadFile %s after rebase = %+v, %v; want %q", path, blob, err, want)
+		}
+	}
+	if _, err := f.manager.RebaseBranch(f.ctx, RebaseBranchRequest{BranchID: "no-such-branch"}); !errors.Is(err, ErrBranchNotFound) {
+		t.Fatalf("RebaseBranch of an unknown branch = %v, want ErrBranchNotFound", err)
+	}
+}

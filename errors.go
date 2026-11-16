@@ -63,3 +63,5 @@ var ErrTitleRequired = errors.New("title is required")
 var ErrSourceBranchRequired = errors.New("source_branch_id is required")
 
 var ErrRepositoryNotRegistered = errors.New("repository file has no catalog entry")
+
+var ErrImportNeedsRepositoryFile = errors.New("importing a repository is not supported on per-repository files")
