@@ -17,6 +17,7 @@ import (
 const (
 	pushCapMessage = "this push is over the 32 MiB limit; push fewer files at a time"
 	pushCapBytes   = 32 << 20
+	pushCapMargin  = 64 << 10
 )
 
 func randomBinaryFile(t *testing.T, dir, name string, size int) {
@@ -63,12 +64,12 @@ func statusesOf(t *testing.T, rec *httptest.ResponseRecorder) map[string]string 
 	return reportStatuses(t, rec.Code, rec.Result().Status, bytes.NewReader(rec.Body.Bytes()))
 }
 
-func TestGitPushCap_APushOverThirtyTwoMiBIsRefusedWithAPlainMessageAndNothingIsStored(t *testing.T) {
+func TestGitPushCap_APushJustOverThirtyTwoMiBIsRefusedWithAPlainMessageAndNothingIsStored(t *testing.T) {
 	s := newFileGitServer(t)
 	ctx := context.Background()
 	work := s.clone(t)
 	transportGit(t, work, "checkout", "-b", "big")
-	commitRandomFile(t, work, "huge.bin", pushCapBytes+(1<<20))
+	commitRandomFile(t, work, "huge.bin", pushCapBytes+pushCapMargin)
 
 	out, err := transportGitMayFail(work, "push", "origin", "big")
 
@@ -87,7 +88,7 @@ func TestGitPushCap_APushOverThirtyTwoMiBIsRefusedWithAPlainMessageAndNothingIsS
 	}
 }
 
-func TestGitPushCap_APushJustUnderTheCapIsAcceptedAndCloneable(t *testing.T) {
+func TestGitPushCapGuard_APushOfTwentyMiBIsStillAcceptedAndCloneable(t *testing.T) {
 	s := newFileGitServer(t)
 	work := s.clone(t)
 	transportGit(t, work, "checkout", "-b", "large")
@@ -96,6 +97,20 @@ func TestGitPushCap_APushJustUnderTheCapIsAcceptedAndCloneable(t *testing.T) {
 	transportGit(t, work, "push", "origin", "large")
 
 	fresh := s.clone(t, "--branch", "large")
+	if got := transportGit(t, fresh, "rev-parse", "HEAD"); got != tip {
+		t.Errorf("clone HEAD = %s, want %s", got, tip)
+	}
+}
+
+func TestGitPushCapGuard_APushJustUnderThirtyTwoMiBIsAcceptedAndCloneable(t *testing.T) {
+	s := newFileGitServer(t)
+	work := s.clone(t)
+	transportGit(t, work, "checkout", "-b", "edge")
+	tip := commitRandomFile(t, work, "edge.bin", pushCapBytes-pushCapMargin)
+
+	transportGit(t, work, "push", "origin", "edge")
+
+	fresh := s.clone(t, "--branch", "edge")
 	if got := transportGit(t, fresh, "rev-parse", "HEAD"); got != tip {
 		t.Errorf("clone HEAD = %s, want %s", got, tip)
 	}

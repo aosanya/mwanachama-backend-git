@@ -20,13 +20,20 @@ The rule each row pins is on [Push indexing](../3.%20implementation/push.md), se
 
 ## Push cap (`git_smarthttp_file_cap_test.go`)
 
-| Case | Result |
-|---|---|
-| A real `git push` of a 33 MiB random file | Refused; git prints "this push is over the 32 MiB limit; push fewer files at a time"; no branch row; the file is not in a new clone |
-| A real `git push` of a 20 MiB random file | Accepted; a clone of the branch is at the pushed commit |
-| A body of exactly the cap, and the same body with the cap one byte lower | Accepted at the cap; refused one byte under it, with the limit message on the ref |
-| A body that declares more than the cap in `Content-Length` | Refused; zero bytes of the body were read |
-| A chunked body four times the cap | Refused; the server read no more than the cap plus 1 MiB |
+Run on a clean export of 025a42b with only the test files and the `maxPush` field in `git.go` added, the four tests marked red fail and the two guards pass; on the fix all six pass.
+
+| Test | Case | Kind | Result |
+|---|---|---|---|
+| `TestGitPushCap_APushJustOverThirtyTwoMiBIsRefused...` | A real `git push` of a random file 64 KiB over 32 MiB | Red proof | Refused; git prints "this push is over the 32 MiB limit; push fewer files at a time"; no branch row; the file is not in a new clone |
+| `TestGitPushCap_APushWhoseBodyIsExactlyTheCap...` | A body of exactly the cap, and the same body with the cap one byte lower | Red proof | Accepted at the cap; refused one byte under it, with the limit message on the ref |
+| `TestGitPushCap_ABodyThatDeclaresMoreThanTheCap...` | A body that declares more than the cap in `Content-Length` | Red proof | Refused; zero bytes of the body were read |
+| `TestGitPushCap_AChunkedBodyIsCutOffAtTheCap...` | A chunked body four times the cap | Red proof | Refused; the server read no more than the cap plus 1 MiB |
+| `TestGitPushCapGuard_APushJustUnderThirtyTwoMiB...` | A real `git push` of a random file 64 KiB under 32 MiB | Guard | Accepted; a clone of the branch is at the pushed commit |
+| `TestGitPushCapGuard_APushOfTwentyMiB...` | A real `git push` of a 20 MiB random file | Guard | Accepted; a clone of the branch is at the pushed commit |
+
+A guard passes with or without the cap, because the old handler accepted every size. It keeps the cap from refusing pushes it should take. Only a red proof can show the cap exists: the just-under push and the just-over push together show where the limit sits, and only the second is red.
+
+With `-race` the just-over push takes about 3 seconds (it is refused early), the 20 MiB guard about 8 and the just-under guard about 12. Against the earlier tests, the just-under push is the only addition: about 12 seconds.
 
 ## Not covered
 

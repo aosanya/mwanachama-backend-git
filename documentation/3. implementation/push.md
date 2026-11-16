@@ -67,3 +67,7 @@ The tag row and the tagged commit's objects are written in one transaction behin
 - The probe a client sends for a push over its 1 MiB `http.postBuffer` (the four bytes `0000`) is answered before the cap and does not count against it.
 
 The hub's own router limit on the whole `/git/` route and its read deadline are outside this repository.
+
+### Which cap tests prove the cap
+
+Four tests in `git_smarthttp_file_cap_test.go` are red proofs: they fail on the code before the cap and pass with it. They are the real-git push just over 32 MiB, the body of exactly the cap against one byte over, the body that declares more than the cap, and the chunked body cut off at the cap. Two tests are guards that pass either way and keep the cap from refusing what it should take: the real-git push just under 32 MiB and the real-git push of 20 MiB (their names carry `Guard`). The table with the run results is on the QA page [Git over HTTP from a per-repository file](../4.%20qa/git-push-tags-and-cap.md).
