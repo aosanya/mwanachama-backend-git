@@ -94,3 +94,22 @@ The tests are `git_impl_repo_catalog_test.go` and
 
 - No catalog-backed `RepositoryCatalog` in this module, only the fake.
 - The `RepositoryFile` func is supplied by the caller; the module has none.
+
+## The repository list's last commit time
+
+Hub issue G76. `models.RepositorySummary`, what `ListRepositorySummaries`
+returns and `forms_git_repository_list` shows, has a `last_commit_at` field
+(RFC 3339 text, left out of the JSON when empty). The field is the type's;
+what fills it is the manager.
+
+The shared-database manager (`gitManager`) leaves it empty on purpose, with or
+without a catalog turned on. Its summaries come from the repository and branch
+rows, which hold no commit time, and the catalog entry's `LastCommitAt` feeds
+only `UpdatedAt` in `ListRepositories`. A caller must read an absent
+`last_commit_at` as "not reported", not as "no commit".
+`TestListRepositorySummariesFromTheSharedDatabaseLeavesLastCommitAtEmpty` holds
+this.
+
+A manager that lists a folder of per-repository files fills the field from the
+catalog entry's `LastCommitAt`, which each merge keeps current. That manager is
+the caller's, not this module's.
