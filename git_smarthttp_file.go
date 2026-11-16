@@ -48,7 +48,15 @@ func (h *fileSmartHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fileSmartHTTP) session(w http.ResponseWriter, r *http.Request) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
-	snap, err := h.m.snapshotFile(r.Context())
+	return h.openSession(w, r, h.m.snapshotFile)
+}
+
+func (h *fileSmartHTTP) refsSession(w http.ResponseWriter, r *http.Request) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
+	return h.openSession(w, r, h.m.snapshotRefs)
+}
+
+func (h *fileSmartHTTP) openSession(w http.ResponseWriter, r *http.Request, take func(context.Context) (*fileSnapshot, error)) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
+	snap, err := take(r.Context())
 	if err != nil {
 		http.Error(w, "repository not found", http.StatusNotFound)
 		return nil, nil, nil, false
@@ -67,7 +75,7 @@ func (h *fileSmartHTTP) infoRefs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported service", http.StatusForbidden)
 		return
 	}
-	_, srv, ep, ok := h.session(w, r)
+	_, srv, ep, ok := h.refsSession(w, r)
 	if !ok {
 		return
 	}

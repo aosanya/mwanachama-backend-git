@@ -14,8 +14,9 @@ import (
 )
 
 type fileSnapshot struct {
-	storage *memory.Storage
-	repo    models.Repository
+	storage   *memory.Storage
+	repo      models.Repository
+	objectRow func(sha string) bool
 }
 
 func (s *fileSnapshot) repository() (*gogit.Repository, error) {
@@ -23,11 +24,9 @@ func (s *fileSnapshot) repository() (*gogit.Repository, error) {
 }
 
 func (m *gitManager) snapshotFile(ctx context.Context) (*fileSnapshot, error) {
-	var repoRow models.Repository
-	err := m.db.WithContext(ctx).Table(m.tables.Repositories).
-		Where("NOT deleted").Order("created_at").First(&repoRow).Error
+	repoRow, err := m.defaultRepositoryRow(ctx)
 	if err != nil {
-		return nil, ErrRepoNotInitialised
+		return nil, err
 	}
 	snap := &fileSnapshot{storage: memory.NewStorage(), repo: repoRow}
 	if err := m.loadObjects(ctx, snap); err != nil {
@@ -102,6 +101,9 @@ func (m *gitManager) loadObjects(ctx context.Context, snap *fileSnapshot) error 
 }
 
 func (s *fileSnapshot) hasObject(sha string) bool {
+	if s.objectRow != nil {
+		return s.objectRow(sha)
+	}
 	return s.storage.HasEncodedObject(gogitplumbing.NewHash(sha)) == nil
 }
 
