@@ -16,14 +16,12 @@ import (
 	"github.com/aosanya/mwanachama-backend-git/models"
 )
 
-// CreateMergeRequest opens a new MergeRequest for the given source branch.
-// Publishes [TopicMergeRequested] on success.
 func (m *gitManager) CreateMergeRequest(ctx context.Context, req CreateMergeRequestRequest) (models.MergeRequest, error) {
 	if req.Title == "" {
-		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: title is required")
+		return models.MergeRequest{}, ErrTitleRequired
 	}
 	if req.SourceBranchID == "" {
-		return models.MergeRequest{}, fmt.Errorf("CreateMergeRequest: source_branch_id is required")
+		return models.MergeRequest{}, ErrSourceBranchRequired
 	}
 	repo, err := m.GetRepository(ctx, req.RepositoryID)
 	if err != nil {

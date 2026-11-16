@@ -48,17 +48,13 @@ var fetchJobsMu sync.Mutex
 // fetchJobs maps jobID → cancel entry for all active fetch goroutines.
 var fetchJobs = make(map[string]fetchCancelEntry)
 
-// FetchBranch triggers an async on-demand fetch of the full commit history
-// and tip-commit file tree for a branch that is currently in "stub" status.
-// Returns immediately with a [models.FetchBranchJob]. Returns
-// [ErrBranchAlreadyFetched] if the branch status is "fetching" or "fetched".
 func (m *gitManager) FetchBranch(ctx context.Context, req FetchBranchRequest) (models.FetchBranchJob, error) {
 	var branchRow models.Branch
 	err := m.db.WithContext(ctx).Table(m.tables.Branches).
 		Where("id = ? AND NOT deleted", req.BranchID).First(&branchRow).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return models.FetchBranchJob{}, fmt.Errorf("FetchBranch: branch %s not found", req.BranchID)
+			return models.FetchBranchJob{}, ErrBranchNotFound
 		}
 		return models.FetchBranchJob{}, fmt.Errorf("FetchBranch %s: get branch: %w", req.BranchID, err)
 	}

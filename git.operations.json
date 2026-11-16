@@ -938,6 +938,9 @@
     "ErrInvalidRelationship": 400,
     "ErrBlobContentUnavailable": 400,
     "ErrContentTampered": 409,
-    "ErrMergeNotPermitted": 403
+    "ErrMergeNotPermitted": 403,
+    "ErrQueryRequired": 400,
+    "ErrTitleRequired": 400,
+    "ErrSourceBranchRequired": 400
   }
 }
