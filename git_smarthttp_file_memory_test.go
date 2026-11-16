@@ -122,3 +122,22 @@ func TestRepoFileGitHTTPMemory_RefAdvertisementOfASixtyMegabyteRepositoryBuildsN
 		}
 	}
 }
+
+func TestRepoFileGitHTTPMemory_CloneOfASixtyMegabyteRepositoryStaysBelowTwiceItsSize(t *testing.T) {
+	s := newBigFileGitServer(t)
+
+	var dir string
+	use := measureMemory(func() { dir = s.clone(t) })
+	t.Logf("clone: allocated %s, peak heap growth %s for a %s repository", mib(use.allocated), mib(use.peak), mib(bigRepoBytes))
+
+	for i := 0; i < bigFileCount; i++ {
+		path := fmt.Sprintf("big/file-%d.txt", i)
+		if got := readCloned(t, dir, path); got != bigText(int64(i+1), bigFileBytes) {
+			t.Errorf("cloned %s differs from what was written", path)
+		}
+	}
+	transportGit(t, dir, "fsck", "--strict")
+	if limit := uint64(2 * bigRepoBytes); use.peak > limit {
+		t.Errorf("clone peak heap growth %s, want at most %s", mib(use.peak), mib(limit))
+	}
+}

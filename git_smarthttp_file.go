@@ -48,15 +48,7 @@ func (h *fileSmartHTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fileSmartHTTP) session(w http.ResponseWriter, r *http.Request) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
-	return h.openSession(w, r, h.m.snapshotFile)
-}
-
-func (h *fileSmartHTTP) refsSession(w http.ResponseWriter, r *http.Request) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
-	return h.openSession(w, r, h.m.snapshotRefs)
-}
-
-func (h *fileSmartHTTP) openSession(w http.ResponseWriter, r *http.Request, take func(context.Context) (*fileSnapshot, error)) (*fileSnapshot, transport.Transport, *transport.Endpoint, bool) {
-	snap, err := take(r.Context())
+	snap, err := h.m.snapshotFile(r.Context())
 	if err != nil {
 		http.Error(w, "repository not found", http.StatusNotFound)
 		return nil, nil, nil, false
@@ -75,7 +67,7 @@ func (h *fileSmartHTTP) infoRefs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported service", http.StatusForbidden)
 		return
 	}
-	_, srv, ep, ok := h.refsSession(w, r)
+	_, srv, ep, ok := h.session(w, r)
 	if !ok {
 		return
 	}
@@ -106,7 +98,7 @@ func (h *fileSmartHTTP) infoRefs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fileSmartHTTP) uploadPack(w http.ResponseWriter, r *http.Request) {
-	_, srv, ep, ok := h.session(w, r)
+	snap, srv, ep, ok := h.session(w, r)
 	if !ok {
 		return
 	}
@@ -129,11 +121,12 @@ func (h *fileSmartHTTP) uploadPack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "shallow requests are not supported", http.StatusNotImplemented)
 		return
 	}
-	resp, err := sess.UploadPack(r.Context(), req)
+	resp, err := uploadPackResponse(snap.storage, req)
 	if err != nil {
 		httpErrorFromTransport(w, err)
 		return
 	}
+	defer resp.Close() //nolint:errcheck
 	setNoCacheHeaders(w)
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
 	w.WriteHeader(http.StatusOK)
