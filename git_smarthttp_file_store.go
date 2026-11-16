@@ -122,6 +122,9 @@ func (m *gitManager) storeTreeObjects(ctx context.Context, repo *gogit.Repositor
 }
 
 func (m *gitManager) storeBlobObject(ctx context.Context, repo *gogit.Repository, hash gogitplumbing.Hash) error {
+	if m.blobDataStored(ctx, hash) {
+		return nil
+	}
 	raw, err := encodedBytes(repo, gogitplumbing.BlobObject, hash)
 	if err != nil {
 		return fmt.Errorf("read blob %s: %w", shortSHA(hash.String()), err)
@@ -145,4 +148,11 @@ func (m *gitManager) storeBlobObject(ctx context.Context, repo *gogit.Repository
 		return fmt.Errorf("store blob %s: %w", shortSHA(hash.String()), err)
 	}
 	return nil
+}
+
+func (m *gitManager) blobDataStored(ctx context.Context, hash gogitplumbing.Hash) bool {
+	var found []string
+	err := m.db.WithContext(ctx).Table(m.tables.Blobs).
+		Where("sha = ? AND data <> ''", hash.String()).Limit(1).Pluck("sha", &found).Error
+	return err == nil && len(found) > 0
 }

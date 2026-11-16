@@ -141,3 +141,21 @@ func TestRepoFileGitHTTPMemory_CloneOfASixtyMegabyteRepositoryStaysBelowTwiceIts
 		t.Errorf("clone peak heap growth %s, want at most %s", mib(use.peak), mib(limit))
 	}
 }
+
+func TestRepoFileGitHTTPMemory_PushToASixtyMegabyteRepositoryStaysBelowTwiceItsSize(t *testing.T) {
+	s := newBigFileGitServer(t)
+	work := s.clone(t)
+	transportGit(t, work, "checkout", "-b", "topic")
+	tip := transportCommit(t, work, "notes.txt", "one small change\n", "add notes")
+
+	use := measureMemory(func() { transportGit(t, work, "push", "origin", "topic") })
+	t.Logf("push: allocated %s, peak heap growth %s for a %s repository", mib(use.allocated), mib(use.peak), mib(bigRepoBytes))
+
+	topic, err := s.rf.GetBranchByName(context.Background(), s.repo, "topic")
+	if err != nil || topic.SHA != tip {
+		t.Fatalf("topic after the push = %v, %v; want tip %s", topic.SHA, err, tip)
+	}
+	if limit := uint64(2 * bigRepoBytes); use.peak > limit {
+		t.Errorf("push peak heap growth %s, want at most %s", mib(use.peak), mib(limit))
+	}
+}
