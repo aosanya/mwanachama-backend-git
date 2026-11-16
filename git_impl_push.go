@@ -85,6 +85,11 @@ func (m *gitManager) IndexPushedBranch(ctx context.Context, repoName, branchRef,
 		return fmt.Errorf("IndexPushedBranch %s/%s: open %s: %w", repoName, branchRef, repoRow.BareClonePath, err)
 	}
 
+	return m.indexPushedBranchFrom(ctx, repo, repoRow, branchRef, oldSHA, newSHA, start)
+}
+
+func (m *gitManager) indexPushedBranchFrom(ctx context.Context, repo *gogit.Repository, repoRow models.Repository, branchRef, oldSHA, newSHA string, start time.Time) error {
+	repoName := repoRow.Name
 	newHash := gogitplumbing.NewHash(newSHA)
 	newCount, err := m.walkNewCommits(ctx, repo, newHash, oldSHA)
 	if err != nil {
