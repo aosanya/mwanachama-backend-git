@@ -28,3 +28,7 @@ Every non-test Go file and every JSON file is identical after the rewrite. What 
 | Only here: `git_typed_input_errors_test.go` | The red test written for the typed 400 errors (hub 84306abb had none). |
 | `repofile_test.go`: the forbidden-import list here also names `jackc/pgx` | The hub module's dependency graph contains pgx through other modules, so the hub drops it from the list. |
 | `routes/repository_list_test.go`, `routes/undeclared_cover_test.go`: the spec path | The hub loads `internal/specs/wakala.git.json`; here the tests load `spec/examples/engineering.git.json`. |
+
+## Result of 2026-11-19
+
+The hub has nothing of its own in the module except one test that pins the older refusal of a pushed tag. Everything else the script reports is work present only here. The full table, the hub wiring around the module and the owner question are in [hub-import-drift.md](hub-import-drift.md).
