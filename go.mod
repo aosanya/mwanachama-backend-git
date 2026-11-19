@@ -3,7 +3,7 @@ module github.com/aosanya/mwanachama-backend-git
 go 1.25.0
 
 require (
-	github.com/aosanya/mwanachama-backend-shared v0.2.0
+	github.com/aosanya/mwanachama-backend-shared v0.3.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-git/go-billy/v5 v5.6.2
 	github.com/go-git/go-git/v5 v5.16.5

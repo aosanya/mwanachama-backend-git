@@ -7,8 +7,8 @@ github.com/ProtonMail/go-crypto v1.1.6 h1:ZcV+Ropw6Qn0AX9brlQLAUXfqLBc7Bl+f/DmNx
 github.com/ProtonMail/go-crypto v1.1.6/go.mod h1:rA3QumHc/FZ8pAHreoekgiAbzpNsfQAosU5td4SnOrE=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be h1:9AeTilPcZAjCFIImctFaOjnTIavg87rW78vTPkQqLI8=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be/go.mod h1:ySMOLuWl6zY27l47sB3qLNK6tF2fkHG55UZxx8oIVo4=
-github.com/aosanya/mwanachama-backend-shared v0.2.0 h1:GJWnFIyy3aXnfg1MnzHiC6XFo1cCJMQ+6QWJTAumehQ=
-github.com/aosanya/mwanachama-backend-shared v0.2.0/go.mod h1:YePPawJxq4ASWv/bLKBBWHvB+vnJ3kf9/ccJE98nkGU=
+github.com/aosanya/mwanachama-backend-shared v0.3.0 h1:+Jea4vNnTzcvSPTG5dOaXgMPSvXuiWcLNcOUhRoQ484=
+github.com/aosanya/mwanachama-backend-shared v0.3.0/go.mod h1:YePPawJxq4ASWv/bLKBBWHvB+vnJ3kf9/ccJE98nkGU=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5/go.mod h1:wHh0iHkYZB8zMSxRWpUBQtwG5a7fFgvEO+odwuTv2gs=
 github.com/cloudflare/circl v1.6.1 h1:zqIqSPIndyBh1bjLVVDHMPpVKqp8Su/V+6MeDzzQBQ0=
