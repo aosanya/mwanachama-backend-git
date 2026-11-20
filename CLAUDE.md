@@ -97,8 +97,8 @@ in and its own indexes; it may not restate a type, a description or a rule.
 versioning contract drafts, so domain-neutrality is exercised rather than
 asserted.
 
-**The route table comes from `git.operations.json`.** Forty of the
-forty-three addresses; `routes/routes.go` is the sentinel map, the
+**The route table comes from `git.operations.json`.** Forty-one of the
+forty-four addresses; `routes/routes.go` is the sentinel map, the
 `dispatch.Table` and the builder ladder, and there are no handlers. The other
 three are in `routes/undeclared.go` — see
 [documentation/2. design/routes.md](documentation/2.%20design/routes.md) for

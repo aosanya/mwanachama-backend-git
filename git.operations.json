@@ -166,6 +166,26 @@
         }
       ]
     },
+    "list_branches": {
+      "method": "GET",
+      "path": "/repositories/{repoID}/branches",
+      "call": "ListBranches",
+      "action": "git.branch.list",
+      "title": "List branches",
+      "description": "Every branch of one repository, each with its id, its name and whether it is the default branch, so a caller can open the tree of any of them.",
+      "args": [
+        {
+          "from": "path",
+          "as": "repoID",
+          "description": "The repository whose branches are listed."
+        }
+      ],
+      "returns": [
+        {
+          "body": true
+        }
+      ]
+    },
     "delete_branch": {
       "method": "DELETE",
       "path": "/branches/{branchID}",

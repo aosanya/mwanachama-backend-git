@@ -62,6 +62,7 @@ var addresses = []string{
 	"GET /merge-requests/{mrID}",
 	"GET /repos",
 	"GET /repositories",
+	"GET /repositories/{repoID}/branches",
 	"GET /repos/{repoID}",
 	"GET /repos/{repoID}/branches",
 	"GET /repos/{repoID}/tags",

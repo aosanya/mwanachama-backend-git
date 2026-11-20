@@ -177,3 +177,36 @@ func TestTheRepositoryListAnswersEachRepositoryWithItsMainBranchID(t *testing.T)
 		t.Errorf("default_branch_id must open the tree, got %d: %s", code, body)
 	}
 }
+
+func TestTheCatalogListsEveryBranchOfARepositoryWithTheDefaultMarked(t *testing.T) {
+	srv := serve(t)
+	_, body := call(t, srv, "POST", "/repos", `{"name":"widgets"}`)
+	var repo map[string]any
+	if err := json.Unmarshal(body, &repo); err != nil {
+		t.Fatalf("decode repository: %v", err)
+	}
+	repoID, _ := repo["id"].(string)
+	if code, body := call(t, srv, "POST", "/repos/"+repoID+"/branches", `{"name":"feature-a"}`); code != http.StatusCreated {
+		t.Fatalf("create branch: got %d: %s", code, body)
+	}
+
+	code, body := call(t, srv, "GET", "/repositories/"+repoID+"/branches", "")
+	if code != http.StatusOK {
+		t.Fatalf("list branches: got %d: %s", code, body)
+	}
+	var branches []map[string]any
+	if err := json.Unmarshal(body, &branches); err != nil {
+		t.Fatalf("decode branches: %v (%s)", err, body)
+	}
+	names := map[string]bool{}
+	defaults := 0
+	for _, branch := range branches {
+		names[branch["name"].(string)] = true
+		if branch["is_default"] == true {
+			defaults++
+		}
+	}
+	if !names["feature-a"] || len(branches) != 2 || defaults != 1 {
+		t.Errorf("want the default branch and feature-a with one default, got %s", body)
+	}
+}

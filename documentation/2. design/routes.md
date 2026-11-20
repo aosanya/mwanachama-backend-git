@@ -1,6 +1,6 @@
 # The route table
 
-Forty-three addresses. Forty are declared in `git.operations.json` and built
+Forty-four addresses. Forty-one are declared in `git.operations.json` and built
 by `dispatch.Table`; three are hand-written in `routes/undeclared.go` because
 the operations format cannot state them.
 
@@ -15,6 +15,7 @@ request to that method's parameters and renders what it returns.
 | POST | `/repos` | InitRepo | 201 |
 | GET | `/repos` | ListRepositories, or GetRepositoryByName with `?name=` | 200 |
 | GET | `/repositories` | ListRepositorySummaries: id, name, default_branch and default_branch_id of every live repository | 200 |
+| GET | `/repositories/{repoID}/branches` | ListBranches: id, name and is_default of every branch, for a caller that lets a person pick one; the filters stay on `/repos/{repoID}/branches` | 200 |
 | GET | `/repos/{repoID}` | GetRepository | 200 |
 | DELETE | `/repos/{repoID}` | DeleteRepo | 204 |
 | POST | `/repos/{repoID}/purge` | PurgeRepo | 204 |
@@ -58,7 +59,7 @@ request to that method's parameters and renders what it returns.
 | POST | `/search/blobs` | SearchBlobs | 200 |
 
 `routes_test.go` writes this set out rather than counting it. A conversion
-that answers forty-three addresses with the wrong forty-three passes a count
+that answers forty-four addresses with the wrong forty-four passes a count
 and fails the list.
 
 ## The three that are not declared
